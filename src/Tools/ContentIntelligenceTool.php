@@ -6,6 +6,7 @@ namespace WpMcp\Tools;
 
 use PhpMcp\Server\Attributes\McpTool;
 use PhpMcp\Server\Attributes\Schema;
+use WpMcp\Helpers\BlockHelper;
 use WpMcp\Helpers\ResponseFormatter;
 
 class ContentIntelligenceTool extends AbstractTool
@@ -19,7 +20,7 @@ class ContentIntelligenceTool extends AbstractTool
         int $post_id,
     ): string {
         $post = $this->getPostOrFail($post_id);
-        $content = $post->post_content;
+        $content = BlockHelper::getRenderedContent($post_id);
         $text = strip_tags($content);
 
         $wordCount = str_word_count($text);
@@ -82,8 +83,8 @@ class ContentIntelligenceTool extends AbstractTool
         #[Schema(description: 'HTTP request timeout in seconds (max 5)', maximum: 5)]
         int $timeout = 3,
     ): string {
-        $post = $this->getPostOrFail($post_id);
-        $content = $post->post_content;
+        $this->getPostOrFail($post_id);
+        $content = BlockHelper::getRenderedContent($post_id);
         $homeUrl = home_url();
         $timeout = min($timeout, 5);
 

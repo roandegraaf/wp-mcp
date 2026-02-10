@@ -6,6 +6,7 @@ namespace WpMcp\Tools;
 
 use PhpMcp\Server\Attributes\McpTool;
 use PhpMcp\Server\Attributes\Schema;
+use WpMcp\Helpers\BlockHelper;
 use WpMcp\Helpers\ResponseFormatter;
 
 class SeoTool extends AbstractTool
@@ -134,7 +135,8 @@ class SeoTool extends AbstractTool
         $seoTitle = get_post_meta($post_id, '_yoast_wpseo_title', true) ?: get_the_title($post_id);
         $noIndex = get_post_meta($post_id, '_yoast_wpseo_meta-robots-noindex', true) === '1';
 
-        $content = strip_tags($post->post_content);
+        $rendered = BlockHelper::getRenderedContent($post_id);
+        $content = strip_tags($rendered);
         $wordCount = str_word_count($content);
 
         $keywordDensity = null;

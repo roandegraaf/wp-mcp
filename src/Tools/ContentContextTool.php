@@ -6,6 +6,7 @@ namespace WpMcp\Tools;
 
 use PhpMcp\Server\Attributes\McpTool;
 use PhpMcp\Server\Attributes\Schema;
+use WpMcp\Helpers\BlockHelper;
 use WpMcp\Helpers\ResponseFormatter;
 
 class ContentContextTool extends AbstractTool
@@ -71,9 +72,9 @@ class ContentContextTool extends AbstractTool
         $sampleCount = count($sampleQuery->posts);
 
         foreach ($sampleQuery->posts as $post) {
-            $content = $post->post_content;
-            $totalWords += str_word_count(strip_tags($content));
-            preg_match_all('/<h[23]/i', $content, $matches);
+            $rendered = BlockHelper::getRenderedContent($post->ID);
+            $totalWords += str_word_count(strip_tags($rendered));
+            preg_match_all('/<h[23]/i', $rendered, $matches);
             $totalHeadings += count($matches[0]);
         }
 

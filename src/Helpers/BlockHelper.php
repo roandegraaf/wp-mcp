@@ -7,6 +7,20 @@ namespace WpMcp\Helpers;
 class BlockHelper
 {
     /**
+     * Get the fully rendered HTML for a post, including ACF blocks.
+     * Uses WordPress's the_content filter to render all block types.
+     */
+    public static function getRenderedContent(int $postId): string
+    {
+        $post = get_post($postId);
+        if (! $post instanceof \WP_Post) {
+            throw new \RuntimeException("Post not found: {$postId}");
+        }
+
+        return apply_filters('the_content', $post->post_content);
+    }
+
+    /**
      * Parse post content into structured block array.
      * For ACF blocks, extracts field data from block attributes.
      */
