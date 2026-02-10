@@ -116,4 +116,174 @@ class SeoTool extends AbstractTool
             'message'  => empty($updates) ? 'No fields to update.' : 'SEO data updated successfully.',
         ]);
     }
+
+    /**
+     * Get Yoast's full SEO analysis results for a post.
+     */
+    #[McpTool(name: 'wp_get_seo_analysis', description: 'Get Yoast SEO analysis for a post: SEO score, readability score, keyword density, and actionable problems/improvements.')]
+    public function getSeoAnalysis(
+        #[Schema(description: 'Post ID')]
+        int $post_id,
+    ): string {
+        $post = $this->getPostOrFail($post_id);
+
+        $seoScore = (int) get_post_meta($post_id, '_yoast_wpseo_linkdex', true);
+        $readabilityScore = (int) get_post_meta($post_id, '_yoast_wpseo_content_score', true);
+        $focusKeyword = get_post_meta($post_id, '_yoast_wpseo_focuskw', true) ?: null;
+        $metaDesc = get_post_meta($post_id, '_yoast_wpseo_metadesc', true) ?: '';
+        $seoTitle = get_post_meta($post_id, '_yoast_wpseo_title', true) ?: get_the_title($post_id);
+        $noIndex = get_post_meta($post_id, '_yoast_wpseo_meta-robots-noindex', true) === '1';
+
+        $content = strip_tags($post->post_content);
+        $wordCount = str_word_count($content);
+
+        $keywordDensity = null;
+        if ($focusKeyword && $wordCount > 0) {
+            $count = substr_count(strtolower($content), strtolower($focusKeyword));
+            $keywordDensity = round(($count / $wordCount) * 100, 2);
+        }
+
+        $metaDescLength = mb_strlen($metaDesc);
+        $titleLength = mb_strlen($seoTitle);
+
+        $problems = [];
+        $improvements = [];
+
+        if (! $focusKeyword) {
+            $problems[] = 'No focus keyword set.';
+        }
+        if ($metaDescLength === 0) {
+            $problems[] = 'No meta description set.';
+        }
+
+        if ($metaDescLength > 0 && $metaDescLength < 120) {
+            $improvements[] = 'Meta description is too short (optimal: 120-155 characters).';
+        }
+        if ($metaDescLength > 155) {
+            $improvements[] = 'Meta description is too long (optimal: 120-155 characters).';
+        }
+        if ($titleLength < 30) {
+            $improvements[] = 'SEO title is too short (optimal: 30-60 characters).';
+        }
+        if ($titleLength > 60) {
+            $improvements[] = 'SEO title is too long (optimal: 30-60 characters).';
+        }
+        if (! has_post_thumbnail($post_id)) {
+            $improvements[] = 'No featured image set.';
+        }
+        if ($wordCount < 300) {
+            $improvements[] = "Low word count ({$wordCount}). Aim for at least 300 words.";
+        }
+
+        return ResponseFormatter::toJson([
+            'post_id'               => $post_id,
+            'seo_score'             => $seoScore,
+            'readability_score'     => $readabilityScore,
+            'focus_keyword'         => $focusKeyword,
+            'keyword_density'       => $keywordDensity,
+            'noindex'               => $noIndex,
+            'meta_description_length' => $metaDescLength,
+            'title_length'          => $titleLength,
+            'problems'              => $problems,
+            'improvements'          => $improvements,
+        ]);
+    }
+
+    /**
+     * Get Yoast sitemap configuration and status.
+     */
+    #[McpTool(name: 'wp_get_sitemap_info', description: 'Get Yoast XML sitemap configuration: sitemap URL, indexed post types, taxonomies, and last modified date.')]
+    public function getSitemapInfo(): string
+    {
+        if (! defined('WPSEO_VERSION')) {
+            throw new \RuntimeException('Yoast SEO plugin is not active.');
+        }
+
+        $sitemapUrl = home_url('/sitemap_index.xml');
+        $wpseoOptions = get_option('wpseo', []);
+
+        $indexedPostTypes = [];
+        $postTypes = get_post_types(['public' => true], 'names');
+        $titleOptions = get_option('wpseo_titles', []);
+        foreach ($postTypes as $pt) {
+            $excluded = ! empty($titleOptions["noindex-{$pt}"]);
+            if (! $excluded) {
+                $indexedPostTypes[] = $pt;
+            }
+        }
+
+        $indexedTaxonomies = [];
+        $taxonomies = get_taxonomies(['public' => true], 'names');
+        foreach ($taxonomies as $tax) {
+            $excluded = ! empty($titleOptions["noindex-tax-{$tax}"]);
+            if (! $excluded) {
+                $indexedTaxonomies[] = $tax;
+            }
+        }
+
+        $lastModified = null;
+        $latestPost = get_posts([
+            'numberposts'  => 1,
+            'post_type'    => $indexedPostTypes ?: 'post',
+            'post_status'  => 'publish',
+            'orderby'      => 'modified',
+            'order'        => 'DESC',
+        ]);
+        if ($latestPost) {
+            $lastModified = $latestPost[0]->post_modified_gmt;
+        }
+
+        return ResponseFormatter::toJson([
+            'sitemap_url'        => $sitemapUrl,
+            'yoast_version'      => WPSEO_VERSION,
+            'indexed_post_types' => array_values($indexedPostTypes),
+            'indexed_taxonomies' => array_values($indexedTaxonomies),
+            'last_modified'      => $lastModified,
+        ]);
+    }
+
+    /**
+     * Update global Yoast SEO settings.
+     */
+    #[McpTool(name: 'wp_update_seo_settings', description: 'Update global Yoast SEO settings such as title separator, company name, social defaults, and sitemap toggle.')]
+    public function updateSeoSettings(
+        #[Schema(description: 'Setting name to update', enum: ['title_separator', 'company_name', 'company_or_person', 'company_logo', 'og_default_image', 'og_frontpage_title', 'og_frontpage_desc', 'twitter_site', 'enable_xml_sitemap'])]
+        string $option_name,
+        #[Schema(description: 'New value for the setting')]
+        string $value,
+    ): string {
+        $allowedKeys = [
+            'title_separator'    => 'wpseo_titles',
+            'company_name'       => 'wpseo_titles',
+            'company_or_person'  => 'wpseo_titles',
+            'company_logo'       => 'wpseo_titles',
+            'og_default_image'   => 'wpseo_social',
+            'og_frontpage_title' => 'wpseo_social',
+            'og_frontpage_desc'  => 'wpseo_social',
+            'twitter_site'       => 'wpseo_social',
+            'enable_xml_sitemap' => 'wpseo',
+        ];
+
+        if (! isset($allowedKeys[$option_name])) {
+            throw new \RuntimeException("Setting '{$option_name}' is not allowed. Allowed: " . implode(', ', array_keys($allowedKeys)));
+        }
+
+        if (! defined('WPSEO_VERSION')) {
+            throw new \RuntimeException('Yoast SEO is required but not active.');
+        }
+
+        $value = $this->sanitizeText($value);
+
+        $group = $allowedKeys[$option_name];
+        $options = get_option($group, []);
+        $options[$option_name] = $value;
+        update_option($group, $options);
+
+        return ResponseFormatter::toJson([
+            'setting'      => $option_name,
+            'value'        => $value,
+            'option_group' => $group,
+            'updated'      => true,
+        ]);
+    }
 }
