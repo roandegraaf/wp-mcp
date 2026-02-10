@@ -39,24 +39,36 @@ WP MCP turns any WordPress installation into a [Model Context Protocol](https://
    https://your-site.com/wp-json/wp-mcp/v1/mcp
    ```
 
-## Connecting an MCP Client
+## Setup & Authentication
 
-Add the server to your MCP client configuration. For example, in Claude Desktop:
+1. Go to **Settings > WP MCP** in the WordPress admin.
+2. Click **Generate Password** to create a dedicated MCP password.
+3. Copy the password immediately — it is only shown once.
+4. Use the ready-made connection snippets shown on the settings page:
+
+**Claude Code CLI:**
+
+```bash
+claude mcp add wordpress https://your-site.com/wp-json/wp-mcp/v1/mcp -t http -H "Authorization: Bearer YOUR_TOKEN"
+```
+
+**JSON configuration** (for MCP client config files):
 
 ```json
 {
   "mcpServers": {
     "wordpress": {
+      "type": "streamable-http",
       "url": "https://your-site.com/wp-json/wp-mcp/v1/mcp",
       "headers": {
-        "Authorization": "Basic <base64-encoded credentials>"
+        "Authorization": "Bearer YOUR_TOKEN"
       }
     }
   }
 }
 ```
 
-> Authentication uses WordPress application passwords. Generate one under **Users > Your Profile > Application Passwords**.
+The settings page also shows a live connection status indicator so you can verify your client is connected.
 
 ---
 

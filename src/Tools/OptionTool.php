@@ -30,6 +30,7 @@ class OptionTool extends AbstractTool
         'nonce_salt',
         'secure_auth_key',
         'secure_auth_salt',
+        'wp_mcp_password_hash',
     ];
 
     /**
@@ -43,6 +44,10 @@ class OptionTool extends AbstractTool
         string $default = '',
     ): string {
         $option_name = $this->sanitizeText($option_name);
+
+        if (in_array($option_name, self::BLOCKED_OPTIONS, true)) {
+            throw new \RuntimeException("Option '{$option_name}' is blocked from being read for safety.");
+        }
 
         $value = get_option($option_name, $default);
 
