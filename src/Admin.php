@@ -92,7 +92,7 @@ class Admin
             delete_transient('wp_mcp_new_token');
         }
 
-        $siteUrl = rest_url('wp-mcp/v1/mcp');
+        $siteUrl = $this->getMcpEndpointUrl();
         $lastActivity = get_transient($this->transientActivity);
         $isConnected = $lastActivity && (time() - (int) $lastActivity) < 300;
 
@@ -165,6 +165,51 @@ class Admin
             </div>
         </div>
         <?php
+    }
+
+    private function getMcpEndpointUrl(): string
+    {
+        $url = rest_url('wp-mcp/v1/mcp');
+
+        if (! $this->isLocalDomain()) {
+            return $url;
+        }
+
+        $parsed = wp_parse_url($url);
+        if (! $parsed || ($parsed['scheme'] ?? '') !== 'https') {
+            return $url;
+        }
+
+        // Local dev with HTTPS: MCP clients (Node.js) reject self-signed certs.
+        // Laravel Herd/Valet exposes secured sites on port 60 over plain HTTP.
+        $httpUrl = 'http://' . $parsed['host'] . ':60';
+        if (! empty($parsed['path'])) {
+            $httpUrl .= $parsed['path'];
+        }
+
+        // Verify port 60 is actually reachable before recommending it.
+        $test = @fsockopen($parsed['host'], 60, $errno, $errstr, 1);
+        if ($test) {
+            fclose($test);
+            return $httpUrl;
+        }
+
+        // Port 60 not available, fall back to original HTTPS URL.
+        return $url;
+    }
+
+    private function isLocalDomain(): bool
+    {
+        $host = wp_parse_url(home_url(), PHP_URL_HOST) ?? '';
+        $localTlds = ['.test', '.local', '.localhost', '.invalid', '.example'];
+
+        foreach ($localTlds as $tld) {
+            if (str_ends_with($host, $tld)) {
+                return true;
+            }
+        }
+
+        return in_array($host, ['localhost', '127.0.0.1', '::1'], true);
     }
 
     private function getClaudeCodeCommand(string $url, string $token): string
