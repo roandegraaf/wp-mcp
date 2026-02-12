@@ -143,7 +143,6 @@ class WpmlTool extends AbstractTool
         $post = $this->getPostOrFail($post_id);
 
         $title = $this->sanitizeText($title);
-        $content = $this->sanitizeHtml($content);
         $language = $this->sanitizeText($language);
 
         $allowedStatuses = ['draft', 'publish', 'pending'];
@@ -151,6 +150,8 @@ class WpmlTool extends AbstractTool
             throw new \RuntimeException("Invalid status '{$status}'. Allowed: " . implode(', ', $allowedStatuses));
         }
 
+        // Disable kses filters to preserve HTML inside block comment JSON attributes
+        kses_remove_filters();
         $newPostId = wp_insert_post([
             'post_title'   => $title,
             'post_content' => $content,
@@ -158,6 +159,7 @@ class WpmlTool extends AbstractTool
             'post_type'    => $post->post_type,
             'post_author'  => $post->post_author,
         ]);
+        kses_init_filters();
 
         if ($newPostId instanceof \WP_Error) {
             throw new \RuntimeException('Failed to create translation: ' . $newPostId->get_error_message());

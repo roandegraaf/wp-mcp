@@ -128,7 +128,7 @@ class PostTool extends AbstractTool
         $postData = [
             'post_title'   => $this->sanitizeText($title),
             'post_type'    => $this->sanitizeText($post_type),
-            'post_content' => $this->sanitizeHtml($content),
+            'post_content' => $content,
             'post_status'  => $this->sanitizeText($status),
             'post_excerpt' => $this->sanitizeText($excerpt),
         ];
@@ -140,7 +140,10 @@ class PostTool extends AbstractTool
             $postData['post_parent'] = $parent;
         }
 
+        // Disable kses filters to preserve HTML inside block comment JSON attributes
+        kses_remove_filters();
         $postId = wp_insert_post($postData, true);
+        kses_init_filters();
 
         if (is_wp_error($postId)) {
             throw new \RuntimeException('Failed to create post: ' . $postId->get_error_message());
@@ -195,7 +198,7 @@ class PostTool extends AbstractTool
             $postData['post_title'] = $this->sanitizeText($title);
         }
         if ($content !== '') {
-            $postData['post_content'] = $this->sanitizeHtml($content);
+            $postData['post_content'] = $content;
         }
         if ($status !== '') {
             $postData['post_status'] = $this->sanitizeText($status);
@@ -208,7 +211,10 @@ class PostTool extends AbstractTool
         }
 
         if (count($postData) > 1) {
+            // Disable kses filters to preserve HTML inside block comment JSON attributes
+            kses_remove_filters();
             $result = wp_update_post($postData, true);
+            kses_init_filters();
             if (is_wp_error($result)) {
                 throw new \RuntimeException('Failed to update post: ' . $result->get_error_message());
             }
