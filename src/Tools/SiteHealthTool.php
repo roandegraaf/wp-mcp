@@ -152,19 +152,31 @@ class SiteHealthTool extends AbstractTool
 
         $lines = min(max(1, $lines), 200);
 
-        $file = new \SplFileObject($path, 'r');
-        $file->seek(PHP_INT_MAX);
-        $totalLines = $file->key();
-        $startLine = max(0, $totalLines - $lines);
-        $file->seek($startLine);
-        $lastLines = [];
-        while (! $file->eof()) {
-            $line = rtrim($file->current(), "\r\n");
-            if ($line !== '') {
-                $lastLines[] = $line;
-            }
-            $file->next();
+        $handle = fopen($path, 'r');
+        if (! $handle) {
+            throw new \RuntimeException('Cannot open debug log file: ' . $path);
         }
+
+        $buffer = '';
+        $chunk = 8192;
+        fseek($handle, 0, SEEK_END);
+        $pos = ftell($handle);
+        $totalSize = $pos;
+
+        while ($pos > 0 && substr_count($buffer, "\n") < $lines + 1) {
+            $readSize = min($chunk, $pos);
+            $pos -= $readSize;
+            fseek($handle, $pos);
+            $buffer = fread($handle, $readSize) . $buffer;
+        }
+        fclose($handle);
+
+        $allLines = explode("\n", trim($buffer));
+        $totalLines = count($allLines);
+        $lastLines = array_values(array_filter(
+            array_slice($allLines, -$lines),
+            fn($line) => $line !== ''
+        ));
 
         $data = [
             'file'          => $path,

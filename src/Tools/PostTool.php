@@ -124,6 +124,8 @@ class PostTool extends AbstractTool
         int $featured_image = 0,
         #[Schema(description: 'ACF fields as JSON: {"field_name": "value", ...}')]
         string $acf_fields = '',
+        #[Schema(description: 'Page template filename (e.g. template-foodbook.blade.php)')]
+        string $page_template = '',
     ): string {
         $postData = [
             'post_title'   => $this->sanitizeText($title),
@@ -151,6 +153,10 @@ class PostTool extends AbstractTool
 
         if ($featured_image > 0) {
             set_post_thumbnail($postId, $featured_image);
+        }
+
+        if ($page_template !== '') {
+            update_post_meta($postId, '_wp_page_template', $this->sanitizeText($page_template));
         }
 
         // Update ACF fields if provided
@@ -189,6 +195,8 @@ class PostTool extends AbstractTool
         int $featured_image = -1,
         #[Schema(description: 'ACF fields to update as JSON: {"field_name": "value", ...}')]
         string $acf_fields = '',
+        #[Schema(description: 'Page template filename (e.g. template-foodbook.blade.php)')]
+        string $page_template = '',
     ): string {
         $this->getPostOrFail($post_id);
 
@@ -227,6 +235,10 @@ class PostTool extends AbstractTool
             } else {
                 set_post_thumbnail($post_id, $featured_image);
             }
+        }
+
+        if ($page_template !== '') {
+            update_post_meta($post_id, '_wp_page_template', $this->sanitizeText($page_template));
         }
 
         // Update ACF fields if provided

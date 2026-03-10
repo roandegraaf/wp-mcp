@@ -114,6 +114,41 @@ class GravityFormsTool extends AbstractTool
     }
 
     /**
+     * Normalize field definitions before passing to GFAPI.
+     * - Preserves custom choice values
+     * - Auto-generates inputs array for checkbox fields
+     */
+    private function processFields(array $fields): array
+    {
+        foreach ($fields as &$field) {
+            if (! empty($field['choices'])) {
+                foreach ($field['choices'] as &$choice) {
+                    if (! isset($choice['value']) || $choice['value'] === '') {
+                        $choice['value'] = $choice['text'];
+                    }
+                }
+                unset($choice);
+            }
+
+            if (($field['type'] ?? '') === 'checkbox' && ! empty($field['choices']) && empty($field['inputs'])) {
+                $fieldId = $field['id'] ?? 0;
+                $inputs = [];
+                foreach ($field['choices'] as $index => $choice) {
+                    $inputs[] = [
+                        'id'    => $fieldId . '.' . ($index + 1),
+                        'label' => $choice['text'],
+                        'name'  => '',
+                    ];
+                }
+                $field['inputs'] = $inputs;
+            }
+        }
+        unset($field);
+
+        return $fields;
+    }
+
+    /**
      * Create a new Gravity Form.
      */
     #[McpTool(name: 'wp_create_form', description: 'Create a new Gravity Form with a title, optional description, and field definitions as JSON.')]
@@ -138,7 +173,7 @@ class GravityFormsTool extends AbstractTool
         $formArray = [
             'title'       => $title,
             'description' => $description,
-            'fields'      => $decodedFields,
+            'fields'      => $this->processFields($decodedFields),
         ];
 
         $newId = \GFAPI::add_form($formArray);
@@ -193,7 +228,7 @@ class GravityFormsTool extends AbstractTool
             if (! is_array($decodedFields)) {
                 throw new \RuntimeException('Invalid JSON for fields parameter.');
             }
-            $form['fields'] = $decodedFields;
+            $form['fields'] = $this->processFields($decodedFields);
             $updated[] = 'fields';
         }
 
