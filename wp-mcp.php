@@ -43,6 +43,9 @@ if (! function_exists('getallheaders') || ! isset($_SERVER['HTTP_AUTHORIZATION']
     }
 }
 
+// GitHub-based plugin updates
+new \WpMcp\GitHubUpdater('zekerzichtbaar/wp-mcp', plugin_basename(__FILE__));
+
 // Bootstrap the plugin
 add_action('plugins_loaded', function () {
     $plugin = new \WpMcp\Plugin();

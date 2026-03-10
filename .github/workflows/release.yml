@@ -1,0 +1,53 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.1'
+          tools: composer:v2
+
+      - name: Install dependencies
+        run: composer install --no-dev --optimize-autoloader --no-interaction
+
+      - name: Build plugin zip
+        run: |
+          # Create a clean build directory with the correct folder name
+          mkdir -p build/wp-mcp
+
+          # Copy plugin files (exclude dev/build files)
+          rsync -a \
+            --exclude='build' \
+            --exclude='.git' \
+            --exclude='.github' \
+            --exclude='.gitignore' \
+            --exclude='composer.lock' \
+            --exclude='phpunit.xml' \
+            --exclude='tests' \
+            --exclude='*.md' \
+            ./ build/wp-mcp/
+
+          # Create the zip from the build directory
+          cd build
+          zip -r ../wp-mcp.zip wp-mcp/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: wp-mcp.zip
+          generate_release_notes: true
