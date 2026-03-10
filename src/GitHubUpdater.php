@@ -54,7 +54,7 @@ class GitHubUpdater
                 'icons'       => [],
                 'banners'     => [],
                 'tested'      => '',
-                'requires_php' => '8.1',
+                'requires_php' => '8.2',
             ];
         }
 
