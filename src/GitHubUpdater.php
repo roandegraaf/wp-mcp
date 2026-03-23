@@ -145,7 +145,7 @@ class GitHubUpdater
             return null;
         }
 
-        set_transient($this->transientKey, $body, 12 * HOUR_IN_SECS);
+        set_transient($this->transientKey, $body, 43200);
 
         return $body;
     }
