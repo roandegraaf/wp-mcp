@@ -31,6 +31,7 @@ class OptionTool extends AbstractTool
         'secure_auth_key',
         'secure_auth_salt',
         'wp_mcp_password_hash',
+        'wp_mcp_api_keys',
     ];
 
     /**

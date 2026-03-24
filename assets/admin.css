@@ -95,3 +95,90 @@
     color: #00a32a !important;
     border-color: #00a32a !important;
 }
+
+/* API Key table */
+.wp-mcp-key-table {
+    margin: 16px 0;
+}
+
+.wp-mcp-key-table th {
+    font-weight: 600;
+}
+
+.wp-mcp-key-actions {
+    text-align: right;
+}
+
+.wp-mcp-revoke-form {
+    display: inline;
+}
+
+/* Create key form */
+.wp-mcp-create-key-form {
+    margin-top: 16px;
+}
+
+.wp-mcp-create-key-row {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+}
+
+.wp-mcp-create-key-row input[type="text"] {
+    margin: 0;
+}
+
+/* Update banner */
+.wp-mcp-update-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 12px 20px;
+    border-radius: 4px;
+    margin-bottom: 20px;
+    max-width: 800px;
+}
+
+.wp-mcp-update-banner.has-update {
+    background: #fcf9e8;
+    border: 1px solid #dba617;
+}
+
+.wp-mcp-update-banner.up-to-date {
+    background: #edfaef;
+    border: 1px solid #00a32a;
+}
+
+.wp-mcp-update-content {
+    flex: 1;
+}
+
+.wp-mcp-update-content details {
+    margin-top: 8px;
+}
+
+.wp-mcp-update-content summary {
+    cursor: pointer;
+    color: #2271b1;
+    font-size: 13px;
+}
+
+.wp-mcp-changelog {
+    margin-top: 8px;
+    padding: 10px 14px;
+    background: rgba(0, 0, 0, 0.04);
+    border-radius: 4px;
+    font-size: 13px;
+    line-height: 1.6;
+}
+
+.wp-mcp-update-actions {
+    flex-shrink: 0;
+}
+
+.wp-mcp-update-spinner {
+    display: inline-block;
+    margin-left: 8px;
+    vertical-align: middle;
+}

@@ -118,6 +118,43 @@ class GitHubUpdater
     }
 
     /**
+     * Get update info if a newer version is available, or null if up to date.
+     */
+    public function getUpdateInfo(): ?array
+    {
+        $release = $this->getLatestRelease();
+        if ($release === null) {
+            return null;
+        }
+
+        $remoteVersion = ltrim($release['tag_name'], 'v');
+        if (! version_compare($remoteVersion, WP_MCP_VERSION, '>')) {
+            return null;
+        }
+
+        return [
+            'version'      => $remoteVersion,
+            'changelog'    => $release['body'] ?? '',
+            'published_at' => $release['published_at'] ?? '',
+            'download_url' => $this->getDownloadUrl($release),
+            'url'          => "https://github.com/{$this->repo}/releases/tag/" . $release['tag_name'],
+        ];
+    }
+
+    /**
+     * Clear the cached release data to force a fresh check.
+     */
+    public function clearCache(): void
+    {
+        delete_transient($this->transientKey);
+    }
+
+    public function getPluginFile(): string
+    {
+        return $this->pluginFile;
+    }
+
+    /**
      * Fetch the latest release from GitHub, with caching.
      */
     private function getLatestRelease(): ?array

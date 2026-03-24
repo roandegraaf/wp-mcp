@@ -23,9 +23,8 @@ class McpHandler
 
         if ($authHeader && stripos($authHeader, 'Bearer ') === 0) {
             $token = substr($authHeader, 7);
-            $hash = get_option('wp_mcp_password_hash');
 
-            if ($hash && wp_check_password($token, $hash)) {
+            if ($this->validateApiKey($token)) {
                 return true;
             }
 
@@ -54,6 +53,37 @@ class McpHandler
         }
 
         return true;
+    }
+
+    private function validateApiKey(string $token): bool
+    {
+        $keys = get_option('wp_mcp_api_keys', []);
+
+        // Migrate legacy single-key format
+        if (empty($keys)) {
+            $legacyHash = get_option('wp_mcp_password_hash');
+            if ($legacyHash) {
+                $keys = [[
+                    'id'           => wp_generate_password(12, false),
+                    'name'         => 'Migrated key',
+                    'hash'         => $legacyHash,
+                    'created_at'   => time(),
+                    'last_used_at' => null,
+                ]];
+                update_option('wp_mcp_api_keys', $keys);
+                delete_option('wp_mcp_password_hash');
+            }
+        }
+
+        foreach ($keys as $index => $key) {
+            if (wp_check_password($token, $key['hash'])) {
+                $keys[$index]['last_used_at'] = time();
+                update_option('wp_mcp_api_keys', $keys);
+                return true;
+            }
+        }
+
+        return false;
     }
 
     public function handleRequest(\WP_REST_Request $request): \WP_REST_Response|\WP_Error
