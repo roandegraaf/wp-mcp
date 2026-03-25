@@ -48,12 +48,12 @@ class MenuTool extends AbstractTool
     #[McpTool(name: 'wp_get_menu_items', description: 'Get all items in a navigation menu with hierarchy (parent/child relationships).')]
     public function getMenuItems(
         #[Schema(description: 'Menu ID or slug')]
-        string $menu,
+        string $menu_id,
     ): string {
-        $menuObj = is_numeric($menu) ? wp_get_nav_menu_object((int) $menu) : wp_get_nav_menu_object($menu);
+        $menuObj = is_numeric($menu_id) ? wp_get_nav_menu_object((int) $menu_id) : wp_get_nav_menu_object($menu_id);
 
         if (! $menuObj) {
-            throw new \RuntimeException("Menu not found: {$menu}");
+            throw new \RuntimeException("Menu not found: {$menu_id}");
         }
 
         $items = wp_get_nav_menu_items($menuObj->term_id);
