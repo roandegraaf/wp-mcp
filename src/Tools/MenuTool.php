@@ -73,6 +73,76 @@ class MenuTool extends AbstractTool
     }
 
     /**
+     * Add a new item to a navigation menu.
+     */
+    #[McpTool(name: 'wp_create_menu_item', description: 'Add a new item to a navigation menu. Supports custom links, pages, posts, categories, and taxonomy terms.')]
+    public function createMenuItem(
+        #[Schema(description: 'Menu ID to add the item to')]
+        int $menu_id,
+        #[Schema(description: 'Display title')]
+        string $title,
+        #[Schema(description: 'Item type: custom, post_type, taxonomy', enum: ['custom', 'post_type', 'taxonomy'])]
+        string $type = 'custom',
+        #[Schema(description: 'URL (required for custom links)')]
+        string $url = '',
+        #[Schema(description: 'Object type: page, post, category, post_tag, or any custom taxonomy/post type (used with post_type/taxonomy types)')]
+        string $object = '',
+        #[Schema(description: 'Object ID — the post ID or term ID to link to (used with post_type/taxonomy types)')]
+        int $object_id = 0,
+        #[Schema(description: 'Parent menu item ID (for sub-items)')]
+        int $parent = 0,
+        #[Schema(description: 'Menu order position')]
+        int $position = 0,
+        #[Schema(description: 'Link target (_blank for new tab)')]
+        string $target = '',
+        #[Schema(description: 'CSS classes (comma-separated)')]
+        string $classes = '',
+    ): string {
+        $args = [
+            'menu-item-title'     => $this->sanitizeText($title),
+            'menu-item-type'      => $type,
+            'menu-item-status'    => 'publish',
+        ];
+
+        if ($type === 'custom') {
+            if ($url === '') {
+                throw new \RuntimeException('URL is required for custom link menu items.');
+            }
+            $args['menu-item-url'] = esc_url_raw($url);
+        } elseif ($type === 'post_type') {
+            $args['menu-item-object']    = $object !== '' ? $object : 'page';
+            $args['menu-item-object-id'] = $object_id;
+        } elseif ($type === 'taxonomy') {
+            $args['menu-item-object']    = $object !== '' ? $object : 'category';
+            $args['menu-item-object-id'] = $object_id;
+        }
+
+        if ($parent > 0) {
+            $args['menu-item-parent-id'] = $parent;
+        }
+        if ($position > 0) {
+            $args['menu-item-position'] = $position;
+        }
+        if ($target !== '') {
+            $args['menu-item-target'] = $this->sanitizeText($target);
+        }
+        if ($classes !== '') {
+            $args['menu-item-classes'] = $this->sanitizeText($classes);
+        }
+
+        $result = wp_update_nav_menu_item($menu_id, 0, $args);
+
+        if (is_wp_error($result)) {
+            throw new \RuntimeException('Failed to create menu item: ' . $result->get_error_message());
+        }
+
+        return ResponseFormatter::toJson([
+            'menu_item_id' => $result,
+            'message'      => "Menu item created successfully with ID {$result}.",
+        ]);
+    }
+
+    /**
      * Update a menu item's title, URL, or position.
      */
     #[McpTool(name: 'wp_update_menu_item', description: 'Update a menu item title, URL, CSS classes, target, or position.')]
