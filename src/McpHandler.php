@@ -145,6 +145,70 @@ class McpHandler
         }
     }
 
+    public function handleUpload(\WP_REST_Request $request): \WP_REST_Response|\WP_Error
+    {
+        require_once ABSPATH . 'wp-admin/includes/file.php';
+        require_once ABSPATH . 'wp-admin/includes/image.php';
+        require_once ABSPATH . 'wp-admin/includes/media.php';
+
+        $files = $request->get_file_params();
+
+        if (empty($files['file'])) {
+            return new \WP_Error('no_file', 'No file provided. Use -F "file=@path/to/file"', ['status' => 400]);
+        }
+
+        $file = $files['file'];
+
+        if ($file['error'] !== UPLOAD_ERR_OK) {
+            return new \WP_Error('upload_error', 'File upload error code: ' . $file['error'], ['status' => 400]);
+        }
+
+        $filetype = wp_check_filetype($file['name']);
+        if (! $filetype['type']) {
+            return new \WP_Error('invalid_type', 'File type not allowed: ' . $file['name'], ['status' => 400]);
+        }
+
+        // Use wp_handle_upload to move file to uploads directory
+        $upload = wp_handle_upload($file, ['test_form' => false]);
+
+        if (isset($upload['error'])) {
+            return new \WP_Error('upload_failed', $upload['error'], ['status' => 500]);
+        }
+
+        $title = sanitize_text_field($request->get_param('title') ?? '');
+        $caption = sanitize_text_field($request->get_param('caption') ?? '');
+        $postId = (int) ($request->get_param('post_id') ?? 0);
+
+        $attachment = [
+            'post_mime_type' => $upload['type'],
+            'post_title'     => $title !== '' ? $title : preg_replace('/\.[^.]+$/', '', basename($upload['file'])),
+            'post_content'   => '',
+            'post_excerpt'   => $caption,
+            'post_status'    => 'inherit',
+        ];
+
+        $attachmentId = wp_insert_attachment($attachment, $upload['file'], $postId > 0 ? $postId : 0);
+
+        if (is_wp_error($attachmentId)) {
+            return new \WP_Error('insert_failed', $attachmentId->get_error_message(), ['status' => 500]);
+        }
+
+        $metadata = wp_generate_attachment_metadata($attachmentId, $upload['file']);
+        wp_update_attachment_metadata($attachmentId, $metadata);
+
+        $alt = sanitize_text_field($request->get_param('alt') ?? '');
+        if ($alt !== '') {
+            update_post_meta($attachmentId, '_wp_attachment_image_alt', $alt);
+        }
+
+        return new \WP_REST_Response([
+            'id'      => $attachmentId,
+            'url'     => wp_get_attachment_url($attachmentId),
+            'title'   => get_the_title($attachmentId),
+            'message' => "Media uploaded successfully with ID {$attachmentId}.",
+        ], 201);
+    }
+
     private function getServer(): Server
     {
         if ($this->server !== null) {

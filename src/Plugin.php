@@ -31,6 +31,14 @@ class Plugin
             ],
         ]);
 
+        register_rest_route('wp-mcp/v1', '/upload', [
+            [
+                'methods'             => 'POST',
+                'callback'            => [$this->handler, 'handleUpload'],
+                'permission_callback' => [$this->handler, 'checkPermissions'],
+            ],
+        ]);
+
         register_rest_route('wp-mcp/v1', '/status', [
             [
                 'methods'             => 'GET',
