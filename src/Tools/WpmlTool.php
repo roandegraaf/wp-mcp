@@ -294,6 +294,99 @@ class WpmlTool extends AbstractTool
         ]);
     }
 
+    #[McpTool(name: 'wp_link_wpml_translation', description: 'Link two existing posts or taxonomy terms as WPML translations of each other. Use this when the elements already exist but are not linked in WPML.')]
+    public function linkWpmlTranslation(
+        #[Schema(description: 'Source element ID (post ID or term ID) — the one already registered in WPML or in the default language')]
+        int $source_id,
+        #[Schema(description: 'Target element ID (post ID or term ID) — the one to link as a translation')]
+        int $target_id,
+        #[Schema(description: 'Target language code (e.g. "nl", "en", "de")')]
+        string $language,
+        #[Schema(description: 'Element type: "post" for posts/pages/CPTs, or a taxonomy name like "category", "apartment_category" for terms')]
+        string $element_type,
+    ): string {
+        $this->requireWpml();
+
+        $language = $this->sanitizeText($language);
+        $element_type = $this->sanitizeText($element_type);
+
+        // Determine WPML element type prefix
+        if ($element_type === 'post') {
+            $post = get_post($source_id);
+            if (! $post) {
+                throw new \RuntimeException("Source post not found: {$source_id}");
+            }
+            $wpmlType = 'post_' . $post->post_type;
+
+            $targetPost = get_post($target_id);
+            if (! $targetPost) {
+                throw new \RuntimeException("Target post not found: {$target_id}");
+            }
+        } else {
+            // It's a taxonomy
+            $wpmlType = 'tax_' . $element_type;
+
+            $sourceTerm = get_term($source_id, $element_type);
+            if (! $sourceTerm || is_wp_error($sourceTerm)) {
+                throw new \RuntimeException("Source term not found: {$source_id} in taxonomy {$element_type}");
+            }
+
+            $targetTerm = get_term($target_id, $element_type);
+            if (! $targetTerm || is_wp_error($targetTerm)) {
+                throw new \RuntimeException("Target term not found: {$target_id} in taxonomy {$element_type}");
+            }
+        }
+
+        // Get or create trid for the source element
+        $trid = apply_filters('wpml_element_trid', null, $source_id, $wpmlType);
+
+        if (! $trid) {
+            // Source element not in WPML yet — register it in the default language first
+            $defaultLanguage = apply_filters('wpml_default_language', null);
+            do_action('wpml_set_element_language_details', [
+                'element_id'           => $source_id,
+                'element_type'         => $wpmlType,
+                'trid'                 => false,
+                'language_code'        => $defaultLanguage,
+                'source_language_code' => null,
+            ]);
+            $trid = apply_filters('wpml_element_trid', null, $source_id, $wpmlType);
+        }
+
+        if (! $trid) {
+            throw new \RuntimeException("Could not get or create translation group for source element {$source_id}");
+        }
+
+        $sourceLanguage = apply_filters('wpml_element_language_code', null, [
+            'element_id'   => $source_id,
+            'element_type' => $wpmlType,
+        ]);
+
+        // Link the target element as a translation
+        do_action('wpml_set_element_language_details', [
+            'element_id'           => $target_id,
+            'element_type'         => $wpmlType,
+            'trid'                 => $trid,
+            'language_code'        => $language,
+            'source_language_code' => $sourceLanguage,
+        ]);
+
+        // Verify the link was created
+        $newTrid = apply_filters('wpml_element_trid', null, $target_id, $wpmlType);
+
+        return ResponseFormatter::toJson([
+            'source_id'       => $source_id,
+            'target_id'       => $target_id,
+            'language'        => $language,
+            'element_type'    => $wpmlType,
+            'trid'            => $newTrid,
+            'linked'          => $newTrid === $trid,
+            'message'         => $newTrid === $trid
+                ? "Successfully linked element {$target_id} as {$language} translation of {$source_id}."
+                : "Warning: linkage may not have succeeded. Verify in WPML admin.",
+        ]);
+    }
+
     #[McpTool(name: 'wp_register_wpml_string', description: 'Register a string for WPML String Translation and optionally provide its translation. Use this for theme/plugin strings wrapped in __() or _e().')]
     public function registerWpmlString(
         #[Schema(description: 'String domain/context (e.g. "theme-shortstayede", "plugin-name")')]
