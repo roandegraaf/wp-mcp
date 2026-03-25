@@ -29,11 +29,11 @@ class WpmlTool extends AbstractTool
         foreach ($languages as $lang) {
             $result[] = [
                 'code'        => $lang['code'],
-                'name'        => $lang['english_name'],
-                'native_name' => $lang['native_name'],
+                'name'        => $lang['english_name'] ?? $lang['display_name'] ?? $lang['translated_name'] ?? $lang['code'],
+                'native_name' => $lang['native_name'] ?? $lang['code'],
                 'is_default'  => $lang['code'] === $defaultLanguage,
-                'active'      => (bool) $lang['active'],
-                'url'         => $lang['url'],
+                'active'      => (bool) ($lang['active'] ?? true),
+                'url'         => $lang['url'] ?? '',
             ];
         }
 
@@ -122,6 +122,110 @@ class WpmlTool extends AbstractTool
             'post_type'        => $post_type,
             'default_language' => $defaultLanguage,
             'languages'        => $languageStats,
+        ]);
+    }
+
+    #[McpTool(name: 'wp_get_term_translations', description: 'Get all translations of a taxonomy term including their language, name, and slug.')]
+    public function getTermTranslations(
+        #[Schema(description: 'Term ID to get translations for')]
+        int $term_id,
+        #[Schema(description: 'Taxonomy name (e.g. category, post_tag, apartment_category)')]
+        string $taxonomy,
+    ): string {
+        $this->requireWpml();
+
+        $term = get_term($term_id, $taxonomy);
+        if (! $term || is_wp_error($term)) {
+            throw new \RuntimeException("Term not found: {$term_id}");
+        }
+
+        $elementType = 'tax_' . $taxonomy;
+        $trid = apply_filters('wpml_element_trid', null, $term_id, $elementType);
+        $translations = apply_filters('wpml_get_element_translations', null, $trid, $elementType);
+
+        $result = [];
+        foreach ($translations as $translation) {
+            $translatedTerm = get_term((int) $translation->element_id, $taxonomy);
+            $result[] = [
+                'language_code' => $translation->language_code,
+                'term_id'       => (int) $translation->element_id,
+                'name'          => $translatedTerm ? $translatedTerm->name : '',
+                'slug'          => $translatedTerm ? $translatedTerm->slug : '',
+            ];
+        }
+
+        return ResponseFormatter::toJson([
+            'source_term_id' => $term_id,
+            'taxonomy'       => $taxonomy,
+            'trid'           => $trid,
+            'translations'   => $result,
+        ]);
+    }
+
+    #[McpTool(name: 'wp_create_term_translation', description: 'Create a translation for a taxonomy term. Creates the translated term and links it via WPML.')]
+    public function createTermTranslation(
+        #[Schema(description: 'Source term ID to translate')]
+        int $term_id,
+        #[Schema(description: 'Taxonomy name (e.g. category, post_tag, apartment_category)')]
+        string $taxonomy,
+        #[Schema(description: 'Target language code (e.g. "en", "de", "fr")')]
+        string $language,
+        #[Schema(description: 'Translated term name')]
+        string $name,
+        #[Schema(description: 'Translated term slug (auto-generated from name if empty)')]
+        string $slug = '',
+        #[Schema(description: 'Translated term description')]
+        string $description = '',
+    ): string {
+        $this->requireWpml();
+
+        $term = get_term($term_id, $taxonomy);
+        if (! $term || is_wp_error($term)) {
+            throw new \RuntimeException("Term not found: {$term_id}");
+        }
+
+        $language = $this->sanitizeText($language);
+        $name = $this->sanitizeText($name);
+
+        // Create the translated term
+        $args = [];
+        if ($slug !== '') {
+            $args['slug'] = sanitize_title($slug);
+        }
+        if ($description !== '') {
+            $args['description'] = $this->sanitizeText($description);
+        }
+
+        $result = wp_insert_term($name, $taxonomy, $args);
+        if (is_wp_error($result)) {
+            throw new \RuntimeException('Failed to create term: ' . $result->get_error_message());
+        }
+
+        $newTermId = $result['term_id'];
+
+        // Link as WPML translation
+        $elementType = 'tax_' . $taxonomy;
+        $trid = apply_filters('wpml_element_trid', null, $term_id, $elementType);
+        $sourceLanguage = apply_filters('wpml_element_language_code', null, [
+            'element_id'   => $term_id,
+            'element_type' => $elementType,
+        ]);
+
+        do_action('wpml_set_element_language_details', [
+            'element_id'           => $newTermId,
+            'element_type'         => $elementType,
+            'trid'                 => $trid,
+            'language_code'        => $language,
+            'source_language_code' => $sourceLanguage,
+        ]);
+
+        return ResponseFormatter::toJson([
+            'source_term_id'     => $term_id,
+            'translated_term_id' => $newTermId,
+            'taxonomy'           => $taxonomy,
+            'language'           => $language,
+            'name'               => $name,
+            'message'            => 'Term translation created successfully.',
         ]);
     }
 
