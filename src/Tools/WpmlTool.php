@@ -293,4 +293,170 @@ class WpmlTool extends AbstractTool
             'message'            => 'Translation created successfully.',
         ]);
     }
+
+    #[McpTool(name: 'wp_register_wpml_string', description: 'Register a string for WPML String Translation and optionally provide its translation. Use this for theme/plugin strings wrapped in __() or _e().')]
+    public function registerWpmlString(
+        #[Schema(description: 'String domain/context (e.g. "theme-shortstayede", "plugin-name")')]
+        string $domain,
+        #[Schema(description: 'Unique string name/identifier within the domain')]
+        string $name,
+        #[Schema(description: 'The original string value (in the default language)')]
+        string $value,
+        #[Schema(description: 'Target language code for translation (e.g. "en", "de"). Leave empty to just register without translating.')]
+        string $language = '',
+        #[Schema(description: 'Translated string value. Required when language is provided.')]
+        string $translation = '',
+        #[Schema(description: 'Translation status: 10 = complete, 3 = needs update, 2 = needs review', minimum: 1, maximum: 10)]
+        int $status = 10,
+    ): string {
+        $this->requireWpml();
+
+        // Register the string
+        do_action('wpml_register_single_string', $domain, $name, $value);
+
+        $result = [
+            'domain'  => $domain,
+            'name'    => $name,
+            'value'   => $value,
+            'message' => "String '{$name}' registered in domain '{$domain}'.",
+        ];
+
+        // Add translation if language is provided
+        if ($language !== '' && $translation !== '') {
+            // Use WPML's icl_add_string_translation if available
+            if (function_exists('icl_add_string_translation') && function_exists('icl_get_string_id')) {
+                $stringId = icl_get_string_id($value, $domain, $name);
+                if ($stringId) {
+                    icl_add_string_translation($stringId, $language, $translation, $status);
+                    $result['translated_to'] = $language;
+                    $result['translation'] = $translation;
+                    $result['message'] = "String '{$name}' registered and translated to {$language}.";
+                } else {
+                    $result['warning'] = 'String registered but could not find string ID for translation. Try translating separately.';
+                }
+            } else {
+                $result['warning'] = 'WPML String Translation plugin not active. String registered but translation not saved.';
+            }
+        }
+
+        return ResponseFormatter::toJson($result);
+    }
+
+    #[McpTool(name: 'wp_translate_wpml_string', description: 'Add or update a translation for an already registered WPML string.')]
+    public function translateWpmlString(
+        #[Schema(description: 'String domain/context (e.g. "theme-shortstayede")')]
+        string $domain,
+        #[Schema(description: 'String name/identifier within the domain')]
+        string $name,
+        #[Schema(description: 'The original string value (used to find the string)')]
+        string $value,
+        #[Schema(description: 'Target language code (e.g. "en", "de", "fr")')]
+        string $language,
+        #[Schema(description: 'Translated string value')]
+        string $translation,
+        #[Schema(description: 'Translation status: 10 = complete, 3 = needs update', minimum: 1, maximum: 10)]
+        int $status = 10,
+    ): string {
+        $this->requireWpml();
+
+        if (! function_exists('icl_add_string_translation') || ! function_exists('icl_get_string_id')) {
+            throw new \RuntimeException('WPML String Translation plugin is required but not active.');
+        }
+
+        $stringId = icl_get_string_id($value, $domain, $name);
+        if (! $stringId) {
+            throw new \RuntimeException("String not found: '{$name}' in domain '{$domain}'. Register it first with wp_register_wpml_string.");
+        }
+
+        $result = icl_add_string_translation($stringId, $language, $translation, $status);
+
+        if (! $result) {
+            throw new \RuntimeException('Failed to save string translation.');
+        }
+
+        return ResponseFormatter::toJson([
+            'domain'      => $domain,
+            'name'        => $name,
+            'language'    => $language,
+            'translation' => $translation,
+            'message'     => "Translation saved for '{$name}' in {$language}.",
+        ]);
+    }
+
+    #[McpTool(name: 'wp_list_wpml_strings', description: 'List registered WPML strings in a domain, with their translations.')]
+    public function listWpmlStrings(
+        #[Schema(description: 'String domain to search in (e.g. "theme-shortstayede")')]
+        string $domain,
+        #[Schema(description: 'Search filter for string name or value')]
+        string $search = '',
+        #[Schema(description: 'Items per page', minimum: 1, maximum: 100)]
+        int $per_page = 50,
+        #[Schema(description: 'Page number', minimum: 1)]
+        int $page = 1,
+    ): string {
+        $this->requireWpml();
+
+        global $wpdb;
+
+        $table = $wpdb->prefix . 'icl_strings';
+        $transTable = $wpdb->prefix . 'icl_string_translations';
+
+        // Check if tables exist
+        if ($wpdb->get_var("SHOW TABLES LIKE '{$table}'") !== $table) {
+            throw new \RuntimeException('WPML String Translation tables not found. Is the plugin active?');
+        }
+
+        $domain = $this->sanitizeText($domain);
+        $where = $wpdb->prepare("WHERE s.context = %s", $domain);
+
+        if ($search !== '') {
+            $like = '%' . $wpdb->esc_like($search) . '%';
+            $where .= $wpdb->prepare(" AND (s.name LIKE %s OR s.value LIKE %s)", $like, $like);
+        }
+
+        $total = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$table} s {$where}");
+
+        $offset = ($page - 1) * $per_page;
+        $strings = $wpdb->get_results(
+            "SELECT s.id, s.name, s.value, s.language
+             FROM {$table} s {$where}
+             ORDER BY s.name ASC
+             LIMIT {$per_page} OFFSET {$offset}"
+        );
+
+        $result = [];
+        foreach ($strings as $str) {
+            $translations = $wpdb->get_results($wpdb->prepare(
+                "SELECT language, value, status FROM {$transTable} WHERE string_id = %d",
+                $str->id
+            ));
+
+            $transMap = [];
+            foreach ($translations as $t) {
+                $transMap[$t->language] = [
+                    'value'  => $t->value,
+                    'status' => (int) $t->status,
+                ];
+            }
+
+            $result[] = [
+                'id'           => (int) $str->id,
+                'name'         => $str->name,
+                'value'        => $str->value,
+                'language'     => $str->language,
+                'translations' => $transMap,
+            ];
+        }
+
+        return ResponseFormatter::toJson([
+            'domain'     => $domain,
+            'strings'    => $result,
+            'pagination' => [
+                'page'        => $page,
+                'per_page'    => $per_page,
+                'total'       => $total,
+                'total_pages' => (int) ceil($total / $per_page),
+            ],
+        ]);
+    }
 }
