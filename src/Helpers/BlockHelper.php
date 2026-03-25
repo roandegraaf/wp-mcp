@@ -209,6 +209,121 @@ class BlockHelper
     }
 
     /**
+     * Delete a block at a specific index.
+     */
+    public static function deleteBlock(int $postId, int $blockIndex): array
+    {
+        $post = get_post($postId);
+        if (! $post instanceof \WP_Post) {
+            throw new \RuntimeException("Post not found: {$postId}");
+        }
+
+        $blocks = parse_blocks($post->post_content);
+
+        $rawIndex = 0;
+        $targetRawIndex = null;
+        $blockName = null;
+
+        foreach ($blocks as $i => $block) {
+            if (! empty($block['blockName'])) {
+                if ($rawIndex === $blockIndex) {
+                    $targetRawIndex = $i;
+                    $blockName = $block['blockName'];
+                }
+                $rawIndex++;
+            }
+        }
+
+        if ($targetRawIndex === null) {
+            throw new \RuntimeException("Block index {$blockIndex} not found. Post has {$rawIndex} blocks.");
+        }
+
+        array_splice($blocks, $targetRawIndex, 1);
+
+        $newContent = serialize_blocks($blocks);
+        self::savePostContent($postId, $newContent);
+
+        return [
+            'success'     => true,
+            'deleted'     => $blockName,
+            'block_index' => $blockIndex,
+            'remaining'   => $rawIndex - 1,
+        ];
+    }
+
+    /**
+     * Move a block from one position to another.
+     */
+    public static function moveBlock(int $postId, int $fromIndex, int $toIndex): array
+    {
+        $post = get_post($postId);
+        if (! $post instanceof \WP_Post) {
+            throw new \RuntimeException("Post not found: {$postId}");
+        }
+
+        $blocks = parse_blocks($post->post_content);
+
+        // Map logical indices to raw indices
+        $indexMap = [];
+        $realIndex = 0;
+        foreach ($blocks as $i => $block) {
+            if (! empty($block['blockName'])) {
+                $indexMap[$realIndex] = $i;
+                $realIndex++;
+            }
+        }
+
+        $totalBlocks = $realIndex;
+
+        if (! isset($indexMap[$fromIndex])) {
+            throw new \RuntimeException("From index {$fromIndex} not found. Post has {$totalBlocks} blocks.");
+        }
+        if ($toIndex < 0 || $toIndex >= $totalBlocks) {
+            throw new \RuntimeException("To index {$toIndex} out of range. Post has {$totalBlocks} blocks (0-" . ($totalBlocks - 1) . ').');
+        }
+        if ($fromIndex === $toIndex) {
+            return [
+                'success' => true,
+                'message' => 'Block is already at the target position.',
+            ];
+        }
+
+        // Extract the block from its current position
+        $fromRaw = $indexMap[$fromIndex];
+        $movedBlock = $blocks[$fromRaw];
+        $blockName = $movedBlock['blockName'];
+        array_splice($blocks, $fromRaw, 1);
+
+        // Recalculate raw index for target position after removal
+        $newIndexMap = [];
+        $ri = 0;
+        foreach ($blocks as $i => $block) {
+            if (! empty($block['blockName'])) {
+                $newIndexMap[$ri] = $i;
+                $ri++;
+            }
+        }
+
+        if ($toIndex >= $ri) {
+            // Insert at end
+            $blocks[] = $movedBlock;
+        } else {
+            $toRaw = $newIndexMap[$toIndex];
+            array_splice($blocks, $toRaw, 0, [$movedBlock]);
+        }
+
+        $newContent = serialize_blocks($blocks);
+        self::savePostContent($postId, $newContent);
+
+        return [
+            'success'    => true,
+            'block_name' => $blockName,
+            'from'       => $fromIndex,
+            'to'         => $toIndex,
+        ];
+    }
+
+    /**
      * Save post content directly via $wpdb to avoid wp_update_post's
      * slash-stripping which corrupts JSON escape sequences in block attributes.
      */

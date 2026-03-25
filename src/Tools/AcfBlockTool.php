@@ -80,4 +80,40 @@ class AcfBlockTool extends AbstractTool
 
         return ResponseFormatter::toJson($result);
     }
+
+    /**
+     * Delete a block at a specified position in the post content.
+     */
+    #[McpTool(name: 'wp_delete_post_block', description: 'Delete a Gutenberg/ACF block at a specified index. Use wp_list_post_blocks to find the block index first.')]
+    public function deletePostBlock(
+        #[Schema(description: 'Post ID')]
+        int $post_id,
+        #[Schema(description: 'Block index (0-based, from wp_list_post_blocks)')]
+        int $block_index,
+    ): string {
+        $this->getPostOrFail($post_id);
+
+        $result = BlockHelper::deleteBlock($post_id, $block_index);
+
+        return ResponseFormatter::toJson($result);
+    }
+
+    /**
+     * Move a block from one position to another in the post content.
+     */
+    #[McpTool(name: 'wp_move_post_block', description: 'Move a Gutenberg/ACF block from one position to another. Use wp_list_post_blocks to find block indices.')]
+    public function movePostBlock(
+        #[Schema(description: 'Post ID')]
+        int $post_id,
+        #[Schema(description: 'Current block index (0-based)')]
+        int $from_index,
+        #[Schema(description: 'Target block index (0-based)')]
+        int $to_index,
+    ): string {
+        $this->getPostOrFail($post_id);
+
+        $result = BlockHelper::moveBlock($post_id, $from_index, $to_index);
+
+        return ResponseFormatter::toJson($result);
+    }
 }
