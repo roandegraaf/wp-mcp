@@ -203,4 +203,30 @@ class MenuTool extends AbstractTool
             'message' => "Menu item {$item_id} updated successfully.",
         ]);
     }
+
+    /**
+     * Remove a menu item from a menu.
+     */
+    #[McpTool(name: 'wp_delete_menu_item', description: 'Remove a menu item from a navigation menu.')]
+    public function deleteMenuItem(
+        #[Schema(description: 'Menu item ID to remove')]
+        int $item_id,
+    ): string {
+        $menuItem = get_post($item_id);
+        if (! $menuItem || $menuItem->post_type !== 'nav_menu_item') {
+            throw new \RuntimeException("Menu item not found: {$item_id}");
+        }
+
+        $title = $menuItem->post_title;
+        $result = wp_delete_post($item_id, true);
+
+        if (! $result) {
+            throw new \RuntimeException("Failed to delete menu item: {$item_id}");
+        }
+
+        return ResponseFormatter::toJson([
+            'success' => true,
+            'message' => "Menu item {$item_id} ('{$title}') removed.",
+        ]);
+    }
 }
