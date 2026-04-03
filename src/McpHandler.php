@@ -218,6 +218,7 @@ class McpHandler
         $server = Server::make()
             ->withServerInfo('WP MCP', WP_MCP_VERSION)
             ->withSessionHandler(new WordPressSessionHandler())
+            ->withPaginationLimit(200)
             ->build();
 
         // Discover tools from our Tools directory
