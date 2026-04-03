@@ -104,7 +104,7 @@ class PostTool extends AbstractTool
     /**
      * Create a new post, page, or custom post type entry.
      */
-    #[McpTool(name: 'wp_create_post', description: 'Create post/page/CPT with title, content, status, and ACF fields.')]
+    #[McpTool(name: 'wp_create_post', description: 'Create post/page/CPT with title, content, status, taxonomy terms, and ACF fields.')]
     public function createPost(
         #[Schema(description: 'Post title')]
         string $title,
@@ -126,6 +126,8 @@ class PostTool extends AbstractTool
         string $acf_fields = '',
         #[Schema(description: 'Page template filename (e.g. template-foodbook.blade.php)')]
         string $page_template = '',
+        #[Schema(description: 'Taxonomy terms as JSON: {"taxonomy_name": [term_id, ...], ...}. Example: {"category": [3], "post_tag": [1, 2]}')]
+        string $taxonomies = '',
     ): string {
         $postData = [
             'post_title'   => $this->sanitizeText($title),
@@ -164,6 +166,23 @@ class PostTool extends AbstractTool
             $fields = json_decode($acf_fields, true);
             if (is_array($fields)) {
                 AcfHelper::updateFields($postId, $fields);
+            }
+        }
+
+        // Assign taxonomy terms if provided
+        if ($taxonomies !== '') {
+            $taxData = json_decode($taxonomies, true);
+            if (is_array($taxData)) {
+                foreach ($taxData as $taxonomy => $termIds) {
+                    if (! taxonomy_exists($taxonomy)) {
+                        throw new \RuntimeException("Taxonomy not found: {$taxonomy}");
+                    }
+                    $termIds = array_map('intval', (array) $termIds);
+                    $result = wp_set_object_terms($postId, $termIds, $taxonomy);
+                    if (is_wp_error($result)) {
+                        throw new \RuntimeException("Failed to set terms for {$taxonomy}: " . $result->get_error_message());
+                    }
+                }
             }
         }
 
