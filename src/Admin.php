@@ -364,6 +364,9 @@ class Admin
         if (! empty($parsed['path'])) {
             $httpUrl .= $parsed['path'];
         }
+        if (! empty($parsed['query'])) {
+            $httpUrl .= '?' . $parsed['query'];
+        }
 
         // Verify port 60 is actually reachable before recommending it.
         $test = @fsockopen($parsed['host'], 60, $errno, $errstr, 1);
@@ -393,7 +396,7 @@ class Admin
     private function getClaudeCodeCommand(string $url, string $token): string
     {
         return sprintf(
-            'claude mcp add wordpress %s -t http -H "Authorization: Bearer %s"',
+            'claude mcp add wordpress \'%s\' -t http -H "Authorization: Bearer %s"',
             $url,
             $token,
         );
