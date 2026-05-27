@@ -116,4 +116,83 @@ class AcfBlockTool extends AbstractTool
 
         return ResponseFormatter::toJson($result);
     }
+
+    /**
+     * List every block type registered in the current WP runtime.
+     */
+    #[McpTool(name: 'wp_list_registered_blocks', description: 'List every block type registered in the WordPress block registry, with optional namespace filter (e.g. "acf", "core"). Useful to verify ACF Composer blocks have actually been registered after wp acorn cache:clear.')]
+    public function listRegisteredBlocks(
+        #[Schema(description: 'Filter by namespace prefix without the slash, e.g. "acf" matches acf/hero, acf/tickets. Empty returns all.')]
+        string $namespace = '',
+    ): string {
+        if (! class_exists('WP_Block_Type_Registry')) {
+            throw new \RuntimeException('WordPress block registry is not available.');
+        }
+
+        $registry = \WP_Block_Type_Registry::get_instance();
+        $all = $registry->get_all_registered();
+
+        $prefix = $namespace !== '' ? rtrim($this->sanitizeText($namespace), '/') . '/' : '';
+
+        $blocks = [];
+        foreach ($all as $name => $blockType) {
+            if ($prefix !== '' && strpos($name, $prefix) !== 0) {
+                continue;
+            }
+            $blocks[] = [
+                'name'        => $name,
+                'title'       => $blockType->title ?? '',
+                'category'    => $blockType->category ?? '',
+                'description' => $blockType->description ?? '',
+                'render'      => ! empty($blockType->render_callback),
+            ];
+        }
+
+        sort($blocks);
+
+        return ResponseFormatter::toJson([
+            'total'     => count($blocks),
+            'namespace' => $namespace,
+            'blocks'    => $blocks,
+        ]);
+    }
+
+    /**
+     * Check whether a specific block name is registered right now.
+     */
+    #[McpTool(name: 'wp_is_block_registered', description: 'Check whether a specific block is currently registered (e.g. "acf/tickets"). Returns registered=true/false plus the registered block type details when present.')]
+    public function isBlockRegistered(
+        #[Schema(description: 'Full block name including namespace, e.g. "acf/tickets" or "core/paragraph"')]
+        string $name,
+    ): string {
+        if (! class_exists('WP_Block_Type_Registry')) {
+            throw new \RuntimeException('WordPress block registry is not available.');
+        }
+
+        $name = trim($this->sanitizeText($name));
+        if ($name === '') {
+            throw new \RuntimeException('Block name is required.');
+        }
+
+        $registry = \WP_Block_Type_Registry::get_instance();
+        $registered = $registry->is_registered($name);
+
+        $result = [
+            'name'       => $name,
+            'registered' => $registered,
+        ];
+
+        if ($registered) {
+            $blockType = $registry->get_registered($name);
+            $result['details'] = [
+                'title'       => $blockType->title ?? '',
+                'category'    => $blockType->category ?? '',
+                'description' => $blockType->description ?? '',
+                'render'      => ! empty($blockType->render_callback),
+                'attributes'  => array_keys((array) ($blockType->attributes ?? [])),
+            ];
+        }
+
+        return ResponseFormatter::toJson($result);
+    }
 }
