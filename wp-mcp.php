@@ -3,7 +3,7 @@
  * Plugin Name: WP MCP
  * Plugin URI: https://github.com/wp-mcp/wp-mcp
  * Description: Exposes WordPress as an MCP (Model Context Protocol) server for AI agents. Provides tools for content management, ACF fields, blocks, media, taxonomies, menus, and SEO.
- * Version: 1.1.17
+ * Version: 1.1.18
  * Requires PHP: 8.1
  * Author: WP MCP
  * License: GPL-2.0-or-later
@@ -16,7 +16,7 @@ if (! defined('ABSPATH')) {
     exit;
 }
 
-define('WP_MCP_VERSION', '1.1.17');
+define('WP_MCP_VERSION', '1.1.18');
 define('WP_MCP_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('WP_MCP_PLUGIN_URL', plugin_dir_url(__FILE__));
 
@@ -42,6 +42,10 @@ if (! function_exists('getallheaders') || ! isset($_SERVER['HTTP_AUTHORIZATION']
         }
     }
 }
+
+// Performance profiler: enable query logging early when a valid loopback
+// token is present, before the theme/template runs its queries.
+\WpMcp\Helpers\Profiler::maybeInstrument();
 
 // GitHub-based plugin updates
 $GLOBALS['wp_mcp_updater'] = new \WpMcp\GitHubUpdater('zekerzichtbaar/wp-mcp', plugin_basename(__FILE__));
