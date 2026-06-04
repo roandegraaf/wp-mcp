@@ -17,6 +17,151 @@ class WpmlTool extends AbstractTool
         }
     }
 
+    /**
+     * Codes of all languages enabled on the site (active set + hidden languages,
+     * which remain enabled). Returns null when SitePress cannot be reached so the
+     * caller can fall back gracefully.
+     *
+     * @return list<string>|null
+     */
+    private function getEnabledLanguageCodes(): ?array
+    {
+        global $sitepress;
+
+        if (! is_object($sitepress) || ! method_exists($sitepress, 'get_active_languages')) {
+            return null;
+        }
+
+        $active = $sitepress->get_active_languages();
+        $codes = is_array($active) ? array_keys($active) : [];
+
+        // Hidden languages are excluded from get_active_languages() in a normal
+        // request but are still enabled — merge them back in.
+        if (method_exists($sitepress, 'get_setting')) {
+            $hidden = $sitepress->get_setting('hidden_languages', []);
+            if (is_array($hidden)) {
+                $codes = array_values(array_unique(array_merge($codes, $hidden)));
+            }
+        }
+
+        return array_map('strval', $codes);
+    }
+
+    /**
+     * Resolve the WPML element type prefix ("post_<type>" or "tax_<taxonomy>")
+     * for a given element, validating that the element exists.
+     *
+     * @param string $element_type "post" for posts/pages/CPTs, or a taxonomy name for terms.
+     * @return array{0:string,1:string} [wpmlType, languageCode]
+     */
+    private function resolveWpmlElement(int $element_id, string $element_type): array
+    {
+        $element_type = $this->sanitizeText($element_type);
+
+        if ($element_type === 'post') {
+            $post = get_post($element_id);
+            if (! $post instanceof \WP_Post) {
+                throw new \RuntimeException("Post not found: {$element_id}");
+            }
+            $wpmlType = 'post_' . $post->post_type;
+        } else {
+            $term = get_term($element_id, $element_type);
+            if (! $term || is_wp_error($term)) {
+                throw new \RuntimeException("Term not found: {$element_id} in taxonomy {$element_type}");
+            }
+            $wpmlType = 'tax_' . $element_type;
+        }
+
+        $language = apply_filters('wpml_element_language_code', null, [
+            'element_id'   => $element_id,
+            'element_type' => $wpmlType,
+        ]);
+
+        return [$wpmlType, (string) $language];
+    }
+
+    /**
+     * Read every row of a translation group (trid) directly from icl_translations,
+     * including orphan rows whose underlying post/term no longer exists.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private function readTranslationGroup(int $trid, string $wpmlType): array
+    {
+        global $wpdb;
+
+        $table = $wpdb->prefix . 'icl_translations';
+        $rows = $wpdb->get_results($wpdb->prepare(
+            "SELECT translation_id, element_id, language_code, source_language_code
+             FROM {$table}
+             WHERE trid = %d AND element_type = %s
+             ORDER BY (source_language_code IS NULL) DESC, language_code ASC",
+            $trid,
+            $wpmlType
+        ));
+
+        $isTax = strpos($wpmlType, 'tax_') === 0;
+        $taxonomy = $isTax ? substr($wpmlType, 4) : '';
+
+        $result = [];
+        foreach ($rows as $row) {
+            $elementId = $row->element_id !== null ? (int) $row->element_id : null;
+            $entry = [
+                'translation_id'       => (int) $row->translation_id,
+                'element_id'           => $elementId,
+                'language_code'        => $row->language_code,
+                'source_language_code' => $row->source_language_code,
+                'is_source'            => $row->source_language_code === null,
+            ];
+
+            if ($elementId !== null) {
+                if ($isTax) {
+                    $term = get_term($elementId, $taxonomy);
+                    $entry['exists'] = (bool) ($term && ! is_wp_error($term));
+                    $entry['title'] = $entry['exists'] ? $term->name : null;
+                } else {
+                    $post = get_post($elementId);
+                    $entry['exists'] = $post instanceof \WP_Post;
+                    $entry['title'] = $entry['exists'] ? get_the_title($elementId) : null;
+                    $entry['status'] = $entry['exists'] ? get_post_status($elementId) : null;
+                }
+            } else {
+                $entry['exists'] = false;
+                $entry['title'] = null;
+            }
+
+            $result[] = $entry;
+        }
+
+        return $result;
+    }
+
+    /**
+     * Flush WPML's translation caches after a low-level icl_translations write so
+     * subsequent reads do not return stale element-translation data.
+     */
+    private function flushWpmlTranslationCaches(): void
+    {
+        global $sitepress;
+
+        if (is_object($sitepress) && method_exists($sitepress, 'get_translations_cache')) {
+            try {
+                $cache = $sitepress->get_translations_cache();
+                if (is_object($cache) && method_exists($cache, 'clear')) {
+                    $cache->clear();
+                }
+            } catch (\Throwable $e) {
+                // Non-fatal: fall through to the object-cache flush below.
+            }
+        }
+
+        // Backstop: WPML memoizes source-language-by-trid and element language
+        // details in the WP object cache. A full flush guarantees coherence.
+        if (function_exists('wp_cache_flush')) {
+            wp_cache_flush();
+        }
+    }
+
     #[McpTool(name: 'wp_list_languages', description: 'List all configured WPML languages with their codes, names, and default status.')]
     public function listLanguages(): string
     {
@@ -25,15 +170,30 @@ class WpmlTool extends AbstractTool
         $languages = apply_filters('wpml_active_languages', null, 'skip_missing=0');
         $defaultLanguage = apply_filters('wpml_default_language', null);
 
+        // The per-language `active` key returned by the `wpml_active_languages`
+        // filter means "is this the language of the current request" — NOT
+        // "is this language enabled site-wide". Under a REST request the current
+        // language is usually the default, so every other language would wrongly
+        // report active:false. Resolve the real enabled set from SitePress
+        // instead (including hidden languages, which are still enabled — they are
+        // merely hidden from the language switcher).
+        $enabledCodes = $this->getEnabledLanguageCodes();
+
         $result = [];
         foreach ($languages as $lang) {
+            $code = $lang['code'];
             $result[] = [
-                'code'        => $lang['code'],
-                'name'        => $lang['english_name'] ?? $lang['display_name'] ?? $lang['translated_name'] ?? $lang['code'],
-                'native_name' => $lang['native_name'] ?? $lang['code'],
-                'is_default'  => $lang['code'] === $defaultLanguage,
-                'active'      => (bool) ($lang['active'] ?? true),
-                'url'         => $lang['url'] ?? '',
+                'code'         => $code,
+                'name'         => $lang['english_name'] ?? $lang['display_name'] ?? $lang['translated_name'] ?? $code,
+                'native_name'  => $lang['native_name'] ?? $code,
+                'is_default'   => $code === $defaultLanguage,
+                // Enabled on the site. Falls back to true (every code returned by
+                // the filter is part of the active set) when SitePress is unavailable.
+                'active'       => $enabledCodes === null ? true : in_array($code, $enabledCodes, true),
+                // Whether this is the language of the current request — what the
+                // filter's own `active` flag actually reports.
+                'is_current'   => (bool) ($lang['active'] ?? false),
+                'url'          => $lang['url'] ?? '',
             ];
         }
 
@@ -103,7 +263,33 @@ class WpmlTool extends AbstractTool
                 continue;
             }
 
+            // Count only published elements in this language whose translation
+            // group (trid) actually has a published default-language source.
+            // The previous query counted *every* published element in the
+            // language, so orphan/duplicate rows with no published source
+            // inflated the count above the default total (e.g. 125%). Joining to
+            // the source row guarantees translated <= total.
             $translated = (int) $wpdb->get_var($wpdb->prepare(
+                "SELECT COUNT(*) FROM {$table} t
+                 INNER JOIN {$wpdb->posts} p ON t.element_id = p.ID
+                 INNER JOIN {$table} src
+                        ON src.trid = t.trid
+                       AND src.element_type = t.element_type
+                       AND src.language_code = %s
+                 INNER JOIN {$wpdb->posts} sp
+                        ON src.element_id = sp.ID
+                       AND sp.post_status = 'publish'
+                 WHERE t.element_type = %s
+                   AND t.language_code = %s
+                   AND p.post_status = 'publish'",
+                $defaultLanguage,
+                $elementType,
+                $lang['code']
+            ));
+
+            // Total published elements in this language regardless of source —
+            // the gap versus $translated surfaces orphan/unlinked content.
+            $rawTotal = (int) $wpdb->get_var($wpdb->prepare(
                 "SELECT COUNT(*) FROM {$table} t
                  INNER JOIN {$wpdb->posts} p ON t.element_id = p.ID
                  WHERE t.element_type = %s AND t.language_code = %s AND p.post_status = 'publish'",
@@ -112,9 +298,13 @@ class WpmlTool extends AbstractTool
             ));
 
             $languageStats[$lang['code']] = [
-                'total'      => $totalDefault,
-                'translated' => $translated,
-                'percentage' => $totalDefault > 0 ? round(($translated / $totalDefault) * 100, 1) : 0,
+                'total'       => $totalDefault,
+                'translated'  => $translated,
+                'untranslated' => max(0, $totalDefault - $translated),
+                // Published posts in this language with no published default-language
+                // source (orphans / inverted-trid leftovers). 0 in a healthy site.
+                'orphans'     => max(0, $rawTotal - $translated),
+                'percentage'  => $totalDefault > 0 ? round(($translated / $totalDefault) * 100, 1) : 0,
             ];
         }
 
@@ -551,5 +741,455 @@ class WpmlTool extends AbstractTool
                 'total_pages' => (int) ceil($total / $per_page),
             ],
         ]);
+    }
+
+    #[McpTool(name: 'wp_inspect_translation_group', description: 'Inspect the raw WPML translation group (trid) an element belongs to. Shows every row in icl_translations for that trid — including the source/original row (source_language_code IS NULL) and any orphan rows whose post/term no longer exists. Use this to diagnose inverted or broken translation structures before repairing them.')]
+    public function inspectTranslationGroup(
+        #[Schema(description: 'Element ID (post ID or term ID) whose translation group to inspect')]
+        int $element_id,
+        #[Schema(description: 'Element type: "post" for posts/pages/CPTs, or a taxonomy name like "category" for terms')]
+        string $element_type,
+    ): string {
+        $this->requireWpml();
+
+        [$wpmlType, $language] = $this->resolveWpmlElement($element_id, $element_type);
+        $trid = apply_filters('wpml_element_trid', null, $element_id, $wpmlType);
+
+        if (! $trid) {
+            return ResponseFormatter::toJson([
+                'element_id'   => $element_id,
+                'element_type' => $wpmlType,
+                'language'     => $language,
+                'trid'         => null,
+                'message'      => 'Element is not registered in any WPML translation group.',
+            ]);
+        }
+
+        $rows = $this->readTranslationGroup((int) $trid, $wpmlType);
+        $sources = array_values(array_filter($rows, static fn ($r) => $r['is_source']));
+
+        return ResponseFormatter::toJson([
+            'element_id'    => $element_id,
+            'element_type'  => $wpmlType,
+            'trid'          => (int) $trid,
+            'source_count'  => count($sources),
+            'source_language' => $sources[0]['language_code'] ?? null,
+            'is_healthy'    => count($sources) === 1,
+            'rows'          => $rows,
+        ]);
+    }
+
+    #[McpTool(name: 'wp_set_translation_source', description: 'Re-root a WPML translation group: make the given element the source/original (the row with source_language_code = NULL) and re-point every sibling to it. Use this to repair inverted structures where the wrong language is marked as the original. This writes icl_translations directly and flushes WPML caches afterwards. Inspect the group first with wp_inspect_translation_group.')]
+    public function setTranslationSource(
+        #[Schema(description: 'Element ID (post ID or term ID) that should become the source/original of its translation group')]
+        int $element_id,
+        #[Schema(description: 'Element type: "post" for posts/pages/CPTs, or a taxonomy name like "category" for terms')]
+        string $element_type,
+    ): string {
+        $this->requireWpml();
+
+        global $wpdb;
+
+        [$wpmlType, $language] = $this->resolveWpmlElement($element_id, $element_type);
+        if ($language === '') {
+            throw new \RuntimeException("Element {$element_id} has no WPML language assigned; cannot set it as source.");
+        }
+
+        $trid = apply_filters('wpml_element_trid', null, $element_id, $wpmlType);
+        if (! $trid) {
+            throw new \RuntimeException("Element {$element_id} is not in any translation group; nothing to re-root.");
+        }
+        $trid = (int) $trid;
+
+        $before = $this->readTranslationGroup($trid, $wpmlType);
+
+        $table = $wpdb->prefix . 'icl_translations';
+
+        // The new source row gets source_language_code = NULL. Bail before the
+        // second UPDATE if this one errors, so we never leave the group with two
+        // sources from a half-applied flip.
+        $wpdb->last_error = '';
+        $firstResult = $wpdb->query($wpdb->prepare(
+            "UPDATE {$table} SET source_language_code = NULL
+             WHERE trid = %d AND element_type = %s AND language_code = %s",
+            $trid,
+            $wpmlType,
+            $language
+        ));
+        if ($firstResult === false || $wpdb->last_error !== '') {
+            $this->flushWpmlTranslationCaches();
+            throw new \RuntimeException(
+                'Failed to set the new source row; group left unchanged. DB error: ' . ($wpdb->last_error ?: 'unknown')
+            );
+        }
+
+        // Every other row in the group points back at the new source language.
+        $wpdb->query($wpdb->prepare(
+            "UPDATE {$table} SET source_language_code = %s
+             WHERE trid = %d AND element_type = %s AND language_code <> %s",
+            $language,
+            $trid,
+            $wpmlType,
+            $language
+        ));
+
+        $this->flushWpmlTranslationCaches();
+
+        // Re-read straight from the DB to confirm the new shape.
+        $after = $this->readTranslationGroup($trid, $wpmlType);
+        $sources = array_values(array_filter($after, static fn ($r) => $r['is_source']));
+        $ok = count($sources) === 1 && ($sources[0]['language_code'] ?? null) === $language;
+
+        return ResponseFormatter::toJson([
+            'element_id'    => $element_id,
+            'element_type'  => $wpmlType,
+            'trid'          => $trid,
+            'new_source_language' => $language,
+            'success'       => $ok,
+            'before'        => $before,
+            'after'         => $after,
+            'message'       => $ok
+                ? "Element {$element_id} ({$language}) is now the source of trid {$trid}."
+                : 'Re-root completed but verification did not find exactly one source row; inspect the group.',
+        ]);
+    }
+
+    #[McpTool(name: 'wp_move_to_translation_group', description: "Move an element into another element's WPML translation group (merge trids). Links the moved element as the target's translation in its own language, keeping WPML's element-translation cache coherent. Fails if the target group already contains the moved element's language. Use to repair split/duplicate translation groups.")]
+    public function moveToTranslationGroup(
+        #[Schema(description: 'Element ID to move into the target group')]
+        int $element_id,
+        #[Schema(description: "Target element ID whose translation group (trid) the element should join")]
+        int $target_id,
+        #[Schema(description: 'Element type: "post" for posts/pages/CPTs, or a taxonomy name like "category" for terms')]
+        string $element_type,
+    ): string {
+        $this->requireWpml();
+
+        [$wpmlType, $language] = $this->resolveWpmlElement($element_id, $element_type);
+        [$targetWpmlType, $targetLanguage] = $this->resolveWpmlElement($target_id, $element_type);
+
+        if ($wpmlType !== $targetWpmlType) {
+            throw new \RuntimeException("Element types differ ({$wpmlType} vs {$targetWpmlType}); both must be the same post type or taxonomy.");
+        }
+        if ($language === '') {
+            throw new \RuntimeException("Element {$element_id} has no WPML language assigned.");
+        }
+
+        // Resolve (or create) the target group.
+        $targetTrid = apply_filters('wpml_element_trid', null, $target_id, $wpmlType);
+        if (! $targetTrid) {
+            $defaultLanguage = apply_filters('wpml_default_language', null);
+            do_action('wpml_set_element_language_details', [
+                'element_id'           => $target_id,
+                'element_type'         => $wpmlType,
+                'trid'                 => false,
+                'language_code'        => $targetLanguage !== '' ? $targetLanguage : $defaultLanguage,
+                'source_language_code' => null,
+            ]);
+            $targetTrid = apply_filters('wpml_element_trid', null, $target_id, $wpmlType);
+        }
+        if (! $targetTrid) {
+            throw new \RuntimeException("Could not resolve a translation group for target element {$target_id}.");
+        }
+        $targetTrid = (int) $targetTrid;
+
+        // Guard against a language collision within the target group.
+        $existing = $this->readTranslationGroup($targetTrid, $wpmlType);
+        foreach ($existing as $row) {
+            if ($row['language_code'] === $language && (int) $row['element_id'] !== $element_id) {
+                throw new \RuntimeException(
+                    "Target group (trid {$targetTrid}) already has a '{$language}' element (#{$row['element_id']}). Resolve the conflict first."
+                );
+            }
+        }
+
+        // Pass an empty source language and let WPML resolve it from the target
+        // trid's existing source — keeps the element-translation cache coherent.
+        $sourceLanguage = apply_filters('wpml_element_language_code', null, [
+            'element_id'   => $target_id,
+            'element_type' => $wpmlType,
+        ]);
+        do_action('wpml_set_element_language_details', [
+            'element_id'           => $element_id,
+            'element_type'         => $wpmlType,
+            'trid'                 => $targetTrid,
+            'language_code'        => $language,
+            'source_language_code' => $sourceLanguage ?: null,
+        ]);
+
+        $newTrid = (int) apply_filters('wpml_element_trid', null, $element_id, $wpmlType);
+
+        return ResponseFormatter::toJson([
+            'element_id'   => $element_id,
+            'target_id'    => $target_id,
+            'element_type' => $wpmlType,
+            'trid'         => $newTrid,
+            'success'      => $newTrid === $targetTrid,
+            'group'        => $this->readTranslationGroup($targetTrid, $wpmlType),
+            'message'      => $newTrid === $targetTrid
+                ? "Element {$element_id} ({$language}) moved into trid {$targetTrid}."
+                : 'Move completed but the element is not in the expected group; inspect it.',
+        ]);
+    }
+
+    #[McpTool(name: 'wp_disconnect_translation', description: 'Remove an element from its WPML translation group, giving it a fresh standalone trid (it becomes its own source/original). Use to detach an element that was wrongly linked. Uses the WPML API so caches stay coherent.')]
+    public function disconnectTranslation(
+        #[Schema(description: 'Element ID (post ID or term ID) to detach from its translation group')]
+        int $element_id,
+        #[Schema(description: 'Element type: "post" for posts/pages/CPTs, or a taxonomy name like "category" for terms')]
+        string $element_type,
+    ): string {
+        $this->requireWpml();
+
+        [$wpmlType, $language] = $this->resolveWpmlElement($element_id, $element_type);
+        if ($language === '') {
+            $language = apply_filters('wpml_default_language', null);
+        }
+
+        $oldTrid = apply_filters('wpml_element_trid', null, $element_id, $wpmlType);
+
+        // trid = false → WPML assigns a brand-new trid with this element as source.
+        do_action('wpml_set_element_language_details', [
+            'element_id'           => $element_id,
+            'element_type'         => $wpmlType,
+            'trid'                 => false,
+            'language_code'        => $language,
+            'source_language_code' => null,
+        ]);
+
+        $newTrid = (int) apply_filters('wpml_element_trid', null, $element_id, $wpmlType);
+
+        return ResponseFormatter::toJson([
+            'element_id'   => $element_id,
+            'element_type' => $wpmlType,
+            'old_trid'     => $oldTrid ? (int) $oldTrid : null,
+            'new_trid'     => $newTrid,
+            'success'      => $newTrid > 0 && (int) $oldTrid !== $newTrid,
+            'message'      => "Element {$element_id} detached into a new standalone group (trid {$newTrid}).",
+        ]);
+    }
+
+    #[McpTool(name: 'wp_get_post_type_translation_modes', description: 'Read the WPML translation mode for every post type: 0 = not translatable, 1 = translatable, 2 = display as translated (read-only / duplicated). Returns both the raw stored setting and the effective is_translated flag.')]
+    public function getPostTypeTranslationModes(): string
+    {
+        $this->requireWpml();
+
+        global $sitepress;
+        if (! is_object($sitepress) || ! method_exists($sitepress, 'get_setting')) {
+            throw new \RuntimeException('SitePress is not available; cannot read translation modes.');
+        }
+
+        $syncOption = $sitepress->get_setting('custom_posts_sync_option', []);
+        if (! is_array($syncOption)) {
+            $syncOption = [];
+        }
+
+        $modeLabels = [
+            0 => 'not_translatable',
+            1 => 'translatable',
+            2 => 'display_as_translated',
+        ];
+
+        $postTypes = get_post_types([], 'objects');
+        $result = [];
+        foreach ($postTypes as $name => $object) {
+            $mode = isset($syncOption[$name]) ? (int) $syncOption[$name] : 0;
+            $result[$name] = [
+                'label'          => $object->labels->singular_name ?? $name,
+                'mode'           => $mode,
+                'mode_label'     => $modeLabels[$mode] ?? 'unknown',
+                'is_translated'  => method_exists($sitepress, 'is_translated_post_type')
+                    ? (bool) $sitepress->is_translated_post_type($name)
+                    : ($mode === 1),
+            ];
+        }
+
+        return ResponseFormatter::toJson([
+            'modes'      => $modeLabels,
+            'post_types' => $result,
+        ]);
+    }
+
+    #[McpTool(name: 'wp_set_post_type_translation_mode', description: 'Set the WPML translation mode for a post type. mode: 0 = not translatable, 1 = translatable, 2 = display as translated. Persists to WPML settings.')]
+    public function setPostTypeTranslationMode(
+        #[Schema(description: 'Post type slug (e.g. "post", "page", "apartment")')]
+        string $post_type,
+        #[Schema(description: 'Translation mode: 0 = not translatable, 1 = translatable, 2 = display as translated', minimum: 0, maximum: 2)]
+        int $mode,
+    ): string {
+        $this->requireWpml();
+
+        global $sitepress;
+        if (! is_object($sitepress) || ! method_exists($sitepress, 'get_setting') || ! method_exists($sitepress, 'set_setting')) {
+            throw new \RuntimeException('SitePress is not available; cannot set translation modes.');
+        }
+
+        $post_type = $this->sanitizeText($post_type);
+        if (! post_type_exists($post_type)) {
+            throw new \RuntimeException("Post type does not exist: {$post_type}");
+        }
+        if (! in_array($mode, [0, 1, 2], true)) {
+            throw new \RuntimeException('mode must be 0 (not translatable), 1 (translatable) or 2 (display as translated).');
+        }
+
+        $syncOption = $sitepress->get_setting('custom_posts_sync_option', []);
+        if (! is_array($syncOption)) {
+            $syncOption = [];
+        }
+        $previous = isset($syncOption[$post_type]) ? (int) $syncOption[$post_type] : null;
+        $syncOption[$post_type] = $mode;
+        $sitepress->set_setting('custom_posts_sync_option', $syncOption, true);
+
+        $modeLabels = [0 => 'not_translatable', 1 => 'translatable', 2 => 'display_as_translated'];
+
+        return ResponseFormatter::toJson([
+            'post_type'      => $post_type,
+            'previous_mode'  => $previous,
+            'mode'           => $mode,
+            'mode_label'     => $modeLabels[$mode],
+            'message'        => "Translation mode for '{$post_type}' set to {$mode} ({$modeLabels[$mode]}).",
+        ]);
+    }
+
+    #[McpTool(name: 'wp_get_custom_field_translation_preference', description: 'Read WPML custom-field (meta key) translation preferences: 0 = ignore (don\'t translate), 1 = copy from original, 2 = translate, 3 = copy once. Optionally filter by a search string (e.g. an ACF field name). Useful to verify ACF fields will translate as expected.')]
+    public function getCustomFieldTranslationPreference(
+        #[Schema(description: 'Optional substring to filter meta keys (e.g. "subtitle"). Empty returns all configured keys.')]
+        string $search = '',
+    ): string {
+        $this->requireWpml();
+
+        $prefs = $this->getCustomFieldPrefs();
+        $search = $this->sanitizeText($search);
+
+        $optionLabels = [
+            0 => 'ignore',
+            1 => 'copy',
+            2 => 'translate',
+            3 => 'copy_once',
+        ];
+
+        $result = [];
+        foreach ($prefs as $key => $value) {
+            if ($search !== '' && stripos((string) $key, $search) === false) {
+                continue;
+            }
+            $value = (int) $value;
+            $result[$key] = [
+                'preference'       => $value,
+                'preference_label' => $optionLabels[$value] ?? 'unknown',
+            ];
+        }
+
+        ksort($result);
+
+        return ResponseFormatter::toJson([
+            'options' => $optionLabels,
+            'fields'  => $result,
+            'total'   => count($result),
+        ]);
+    }
+
+    #[McpTool(name: 'wp_set_custom_field_translation_preference', description: 'Set the WPML translation preference for a custom field / meta key. preference: 0 = ignore, 1 = copy, 2 = translate, 3 = copy once. For ACF fields, the companion "_"-prefixed meta key (which stores the ACF field-key reference) is automatically set to copy (1) so translations do not break — unless manage_acf_reference is false.')]
+    public function setCustomFieldTranslationPreference(
+        #[Schema(description: 'Meta key / custom field name (e.g. "subtitle", "hero_text")')]
+        string $meta_key,
+        #[Schema(description: 'Translation preference: 0 = ignore, 1 = copy, 2 = translate, 3 = copy once', minimum: 0, maximum: 3)]
+        int $preference,
+        #[Schema(description: 'When true (default) and meta_key is an ACF field, also set the companion "_meta_key" reference to copy (1). Set false to manage it manually.')]
+        bool $manage_acf_reference = true,
+    ): string {
+        $this->requireWpml();
+
+        global $wpdb;
+
+        $meta_key = $this->sanitizeText($meta_key);
+        if ($meta_key === '') {
+            throw new \RuntimeException('meta_key is required.');
+        }
+        if (! in_array($preference, [0, 1, 2, 3], true)) {
+            throw new \RuntimeException('preference must be 0 (ignore), 1 (copy), 2 (translate) or 3 (copy once).');
+        }
+
+        $prefs = $this->getCustomFieldPrefs();
+        $optionLabels = [0 => 'ignore', 1 => 'copy', 2 => 'translate', 3 => 'copy_once'];
+
+        $previous = isset($prefs[$meta_key]) ? (int) $prefs[$meta_key] : null;
+        $prefs[$meta_key] = $preference;
+
+        $companionApplied = null;
+        // ACF stores a "_<field>" companion meta holding the field-key reference.
+        // That reference must be COPIED (not translated) or translations break.
+        if ($manage_acf_reference && strpos($meta_key, '_') !== 0) {
+            $companion = '_' . $meta_key;
+            $companionExists = (int) $wpdb->get_var($wpdb->prepare(
+                "SELECT 1 FROM {$wpdb->postmeta} WHERE meta_key = %s LIMIT 1",
+                $companion
+            ));
+            if ($companionExists) {
+                $prefs[$companion] = WPML_COPY_CUSTOM_FIELD;
+                $companionApplied = $companion;
+            }
+        }
+
+        $this->saveCustomFieldPrefs($prefs);
+
+        $response = [
+            'meta_key'          => $meta_key,
+            'previous'          => $previous,
+            'preference'        => $preference,
+            'preference_label'  => $optionLabels[$preference],
+            'message'           => "Translation preference for '{$meta_key}' set to {$preference} ({$optionLabels[$preference]}).",
+        ];
+        if ($companionApplied !== null) {
+            $response['acf_reference_key'] = $companionApplied;
+            $response['acf_reference_preference'] = WPML_COPY_CUSTOM_FIELD;
+            $response['message'] .= " ACF reference '{$companionApplied}' set to copy.";
+        }
+
+        return ResponseFormatter::toJson($response);
+    }
+
+    /**
+     * Read the WPML custom-field translation preference map (meta_key => option).
+     *
+     * @return array<string, int>
+     */
+    private function getCustomFieldPrefs(): array
+    {
+        global $sitepress;
+        if (! is_object($sitepress) || ! method_exists($sitepress, 'get_setting')) {
+            throw new \RuntimeException('SitePress is not available; cannot read custom-field preferences.');
+        }
+
+        $tm = $sitepress->get_setting('translation-management', []);
+        $prefs = is_array($tm) && isset($tm['custom_fields_translation']) && is_array($tm['custom_fields_translation'])
+            ? $tm['custom_fields_translation']
+            : [];
+
+        $out = [];
+        foreach ($prefs as $key => $value) {
+            $out[(string) $key] = (int) $value;
+        }
+        return $out;
+    }
+
+    /**
+     * Persist the WPML custom-field translation preference map.
+     *
+     * @param array<string, int> $prefs
+     */
+    private function saveCustomFieldPrefs(array $prefs): void
+    {
+        global $sitepress;
+        if (! method_exists($sitepress, 'set_setting')) {
+            throw new \RuntimeException('SitePress is not available; cannot save custom-field preferences.');
+        }
+
+        $tm = $sitepress->get_setting('translation-management', []);
+        if (! is_array($tm)) {
+            $tm = [];
+        }
+        $tm['custom_fields_translation'] = $prefs;
+        $sitepress->set_setting('translation-management', $tm, true);
     }
 }
