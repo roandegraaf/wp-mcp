@@ -34,13 +34,13 @@ class AcfBlockTool extends AbstractTool
     /**
      * Update a specific block's data by its index in the post.
      */
-    #[McpTool(name: 'wp_update_post_block', description: 'Update a specific block\'s field data by index. For ACF blocks, updates the ACF field values.')]
+    #[McpTool(name: 'wp_update_post_block', description: 'Update a specific block\'s field data by index. For ACF blocks, updates the ACF field values. Repeaters must be flattened: pass the row count under the field name plus one entry per cell, e.g. {"buttons": 2, "buttons_0_color": "primary", "buttons_1_color": "ghost"}.')]
     public function updatePostBlock(
         #[Schema(description: 'Post ID')]
         int $post_id,
         #[Schema(description: 'Block index (0-based, from wp_list_post_blocks)')]
         int $block_index,
-        #[Schema(description: 'JSON object of field data to update')]
+        #[Schema(description: 'JSON object of field data to update, keyed by ACF field name. Repeater/flexible-content rows must be flattened to "<field>_<index>_<subfield>" with an integer row count under "<field>"; nested arrays are rejected. Field keys are resolved automatically within this block\'s own field groups — only pass a "_<fieldname>" entry to override that.')]
         string $data,
     ): string {
         $this->getPostOrFail($post_id);
@@ -58,13 +58,13 @@ class AcfBlockTool extends AbstractTool
     /**
      * Insert a new block at a specified position in the post content.
      */
-    #[McpTool(name: 'wp_insert_post_block', description: 'Insert a new Gutenberg/ACF block at a specified position. For ACF blocks, use block name like "acf/hero" and pass field data.')]
+    #[McpTool(name: 'wp_insert_post_block', description: 'Insert a new Gutenberg/ACF block at a specified position. For ACF blocks, use block name like "acf/hero" and pass field data. Repeaters must be flattened: pass the row count under the field name plus one entry per cell, e.g. {"buttons": 2, "buttons_0_color": "primary", "buttons_1_color": "ghost"}.')]
     public function insertPostBlock(
         #[Schema(description: 'Post ID')]
         int $post_id,
         #[Schema(description: 'Block name (e.g. "acf/hero", "core/paragraph")')]
         string $block_name,
-        #[Schema(description: 'JSON object of block/field data')]
+        #[Schema(description: 'JSON object of block/field data, keyed by ACF field name. Repeater/flexible-content rows must be flattened to "<field>_<index>_<subfield>" with an integer row count under "<field>"; nested arrays are rejected. Field keys are resolved automatically within this block\'s own field groups — only pass a "_<fieldname>" entry to override that.')]
         string $data = '{}',
         #[Schema(description: 'Position to insert at (0-based). -1 for end.')]
         int $position = -1,

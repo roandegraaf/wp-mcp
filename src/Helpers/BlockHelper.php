@@ -128,7 +128,17 @@ class BlockHelper
         // For ACF blocks, merge data into attrs.data
         if (str_starts_with($targetBlock['blockName'] ?? '', 'acf/')) {
             $existingData = $targetBlock['attrs']['data'] ?? [];
-            $blocks[$targetRawIndex]['attrs']['data'] = array_merge($existingData, self::prepareAcfBlockData($newData));
+            $prepared     = self::prepareAcfBlockData($newData, $targetBlock['blockName'], $existingData);
+
+            // Overlay rather than array_merge: the latter renumbers integer-like
+            // keys, and appending in place keeps untouched entries in their
+            // original order so the serialised attrs stay diff-clean.
+            $merged = $existingData;
+            foreach ($prepared as $preparedKey => $preparedValue) {
+                $merged[$preparedKey] = $preparedValue;
+            }
+
+            $blocks[$targetRawIndex]['attrs']['data'] = $merged;
         } else {
             // For regular blocks, merge into attrs
             $blocks[$targetRawIndex]['attrs'] = array_merge(
@@ -171,7 +181,7 @@ class BlockHelper
 
         // For ACF blocks, set data in attrs
         if (str_starts_with($blockName, 'acf/')) {
-            $newBlock['attrs']['data'] = self::prepareAcfBlockData($blockData);
+            $newBlock['attrs']['data'] = self::prepareAcfBlockData($blockData, $blockName);
             $newBlock['attrs']['name'] = $blockName;
         } else {
             $newBlock['attrs'] = $blockData;
@@ -347,25 +357,142 @@ class BlockHelper
     }
 
     /**
-     * Prepare ACF data for block storage.
-     * Adds field key mappings where possible.
+     * Prepare ACF data for block storage, attaching the `_<name>` companion
+     * entries that hold each value's field key.
+     *
+     * Companion keys are decided in strict precedence order:
+     *   1. a key the caller passed explicitly,
+     *   2. the key already stored on this block — never re-derived,
+     *   3. a key resolved within this block's own field groups,
+     *   4. otherwise fail, rather than borrow a key from another block.
+     *
+     * Rule 2 is what makes a read/modify/write round trip lossless: callers
+     * work with plain field names, so re-deriving a key on every write is both
+     * unnecessary and the only way a wrong key can creep in.
      */
-    private static function prepareAcfBlockData(array $data): array
+    private static function prepareAcfBlockData(array $data, string $blockName, array $existingData = []): array
     {
         $prepared = [];
 
+        // Companion keys supplied by the caller take precedence over everything.
+        $explicitKeys = [];
         foreach ($data as $key => $value) {
+            if (is_string($key) && str_starts_with($key, '_')) {
+                $explicitKeys[$key] = $value;
+            }
+        }
+
+        foreach ($data as $key => $value) {
+            $key = (string) $key;
+
+            // Companion keys are written alongside their value below.
+            if (isset($explicitKeys[$key])) {
+                continue;
+            }
+
+            self::assertNotNestedRows($blockName, $key, $value);
+
             $prepared[$key] = $value;
 
-            // Try to find the field key for this field name
-            if (function_exists('acf_get_field')) {
-                $field = acf_get_field($key);
-                if ($field) {
-                    $prepared['_' . $key] = $field['key'];
-                }
+            $companion = '_' . $key;
+
+            if (array_key_exists($companion, $explicitKeys)) {
+                $prepared[$companion] = $explicitKeys[$companion];
+                continue;
+            }
+
+            if (array_key_exists($companion, $existingData)) {
+                $prepared[$companion] = $existingData[$companion];
+                continue;
+            }
+
+            // Without ACF there is no way to know the key. Storing the value
+            // alone is recoverable; storing a guessed key is not.
+            if (! AcfFieldKeyResolver::isAvailable()) {
+                continue;
+            }
+
+            $fieldKey = AcfFieldKeyResolver::resolveKey($blockName, $key);
+            if ($fieldKey === null) {
+                throw new \RuntimeException(AcfFieldKeyResolver::describeFailure($blockName, $key));
+            }
+
+            $prepared[$companion] = $fieldKey;
+        }
+
+        // Carry through companion keys that had no value counterpart in $data.
+        foreach ($explicitKeys as $key => $value) {
+            if (! array_key_exists($key, $prepared)) {
+                $prepared[$key] = $value;
             }
         }
 
         return $prepared;
+    }
+
+    /**
+     * Reject repeater/flexible-content values passed as nested row arrays.
+     *
+     * ACF stores these flattened: an integer row count under the field name,
+     * plus one `<field>_<index>_<subfield>` entry per cell. Writing the nested
+     * form instead puts an array where the render path expects a count, which
+     * fatals the front end on a production site with WP_DEBUG off. Normalising
+     * would mean guessing at each sub-value's type, so this rejects with the
+     * exact shape to send instead.
+     */
+    private static function assertNotNestedRows(string $blockName, string $key, mixed $value): void
+    {
+        if (! is_array($value) || $value === [] || ! array_is_list($value)) {
+            return;
+        }
+
+        // Row-shaped means a list whose entries are themselves arrays. Galleries
+        // and relationships are lists of IDs; link/image values are associative.
+        if (! is_array($value[0])) {
+            return;
+        }
+
+        if (! AcfFieldKeyResolver::isAvailable()) {
+            return;
+        }
+
+        $field = AcfFieldKeyResolver::resolveField($blockName, $key);
+        $type  = $field['type'] ?? null;
+
+        if ($type !== 'repeater' && $type !== 'flexible_content') {
+            return;
+        }
+
+        throw new \RuntimeException(sprintf(
+            'Field "%s" on block "%s" is a %s and cannot be written as a nested array — '
+            . 'ACF stores it flattened, and the nested form fatals the page on render. '
+            . 'Send the row count under "%s" plus one entry per cell instead, e.g. %s',
+            $key,
+            $blockName,
+            $type,
+            $key,
+            self::describeFlattenedExample($key, $value),
+        ));
+    }
+
+    /**
+     * Render a concrete flattened example from the rows the caller supplied.
+     */
+    private static function describeFlattenedExample(string $key, array $rows): string
+    {
+        $example = [$key => count($rows)];
+
+        foreach ($rows as $index => $row) {
+            if (! is_array($row)) {
+                continue;
+            }
+            foreach ($row as $subKey => $subValue) {
+                $example[$key . '_' . $index . '_' . $subKey] = $subValue;
+            }
+        }
+
+        $encoded = json_encode($example, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+
+        return $encoded === false ? '{"' . $key . '": ' . count($rows) . ', ...}' : $encoded;
     }
 }
