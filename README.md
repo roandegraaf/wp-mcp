@@ -75,7 +75,7 @@ The settings page also shows a live connection status indicator so you can verif
 For scripted or one-click provisioning (used by the WordPress WiZZard app), the plugin ships a WP-CLI command that creates an API key and returns everything needed to connect:
 
 ```bash
-wp mcp connect --name="WordPress WiZZard" --server=my-site --replace
+wp mcp connect --name="WordPress WiZZard - Roan's MacBook Pro" --server=my-site
 ```
 
 ```json
@@ -93,14 +93,14 @@ wp mcp connect --name="WordPress WiZZard" --server=my-site --replace
 |--------|---------|-------------|
 | `--name` | `WordPress WiZZard` | Name stored with the API key. |
 | `--server` | `wordpress` | Server name used in the generated client snippets. |
-| `--replace` | off | Revoke existing keys with the same name first (tokens are hashed and cannot be recovered). |
+| `--replace` | off | Revoke existing keys with the same name first (tokens are hashed and cannot be recovered). Leave it off and scope `--name` per machine so other clients keep working. |
 | `--format` | `json` | `json` for the full payload, `text` for just the `claude mcp add` command. |
 
 Install and provision in one go:
 
 ```bash
 wp plugin install https://github.com/roandegraaf/wp-mcp/releases/latest/download/wp-mcp.zip --activate --force
-wp mcp connect --replace --format=text
+wp mcp connect --name="WP MCP - $(hostname)" --format=text
 ```
 
 ---
