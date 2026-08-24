@@ -70,6 +70,39 @@ claude mcp add wordpress https://your-site.com/wp-json/wp-mcp/v1/mcp -t http -H 
 
 The settings page also shows a live connection status indicator so you can verify your client is connected.
 
+### Headless setup with WP-CLI
+
+For scripted or one-click provisioning (used by the WordPress WiZZard app), the plugin ships a WP-CLI command that creates an API key and returns everything needed to connect:
+
+```bash
+wp mcp connect --name="WordPress WiZZard" --server=my-site --replace
+```
+
+```json
+{
+  "endpoint": "https://your-site.com/wp-json/wp-mcp/v1/mcp",
+  "token": "...",
+  "command": "claude mcp add my-site 'https://your-site.com/wp-json/wp-mcp/v1/mcp' -t http -H \"Authorization: Bearer ...\"",
+  "config": "{ ... }",
+  "site_name": "Your site",
+  "plugin_version": "1.1.22"
+}
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--name` | `WordPress WiZZard` | Name stored with the API key. |
+| `--server` | `wordpress` | Server name used in the generated client snippets. |
+| `--replace` | off | Revoke existing keys with the same name first (tokens are hashed and cannot be recovered). |
+| `--format` | `json` | `json` for the full payload, `text` for just the `claude mcp add` command. |
+
+Install and provision in one go:
+
+```bash
+wp plugin install https://github.com/roandegraaf/wp-mcp/releases/latest/download/wp-mcp.zip --activate --force
+wp mcp connect --replace --format=text
+```
+
 ---
 
 ## Tools Reference

@@ -6,7 +6,6 @@ namespace WpMcp;
 
 class Admin
 {
-    private string $optionKeys = 'wp_mcp_api_keys';
     private string $transientActivity = 'wp_mcp_last_activity';
     private string $nonceAction = 'wp_mcp_settings';
 
@@ -80,18 +79,7 @@ class Admin
                 return;
             }
 
-            $token = wp_generate_password(32, false);
-            $hash = wp_hash_password($token);
-
-            $keys = get_option($this->optionKeys, []);
-            $keys[] = [
-                'id'           => wp_generate_password(12, false),
-                'name'         => $name,
-                'hash'         => $hash,
-                'created_at'   => time(),
-                'last_used_at' => null,
-            ];
-            update_option($this->optionKeys, $keys);
+            $token = ApiKeyStore::create($name);
 
             set_transient('wp_mcp_new_token', $token, 60);
             set_transient('wp_mcp_new_token_name', $name, 60);
@@ -105,9 +93,7 @@ class Admin
                 return;
             }
 
-            $keys = get_option($this->optionKeys, []);
-            $keys = array_values(array_filter($keys, fn($key) => $key['id'] !== $keyId));
-            update_option($this->optionKeys, $keys);
+            ApiKeyStore::revokeById($keyId);
 
             add_settings_error('wp-mcp', 'key-revoked', 'API key revoked.', 'success');
         }
@@ -202,7 +188,7 @@ class Admin
             return;
         }
 
-        $keys = get_option($this->optionKeys, []);
+        $keys = ApiKeyStore::all();
         $newToken = get_transient('wp_mcp_new_token');
         $newTokenName = get_transient('wp_mcp_new_token_name');
         if ($newToken) {
@@ -347,75 +333,16 @@ class Admin
 
     private function getMcpEndpointUrl(): string
     {
-        $url = rest_url('wp-mcp/v1/mcp');
-
-        if (! $this->isLocalDomain()) {
-            return $url;
-        }
-
-        $parsed = wp_parse_url($url);
-        if (! $parsed || ($parsed['scheme'] ?? '') !== 'https') {
-            return $url;
-        }
-
-        // Local dev with HTTPS: MCP clients (Node.js) reject self-signed certs.
-        // Laravel Herd/Valet exposes secured sites on port 60 over plain HTTP.
-        $httpUrl = 'http://' . $parsed['host'] . ':60';
-        if (! empty($parsed['path'])) {
-            $httpUrl .= $parsed['path'];
-        }
-        if (! empty($parsed['query'])) {
-            $httpUrl .= '?' . $parsed['query'];
-        }
-
-        // Verify port 60 is actually reachable before recommending it.
-        $test = @fsockopen($parsed['host'], 60, $errno, $errstr, 1);
-        if ($test) {
-            fclose($test);
-            return $httpUrl;
-        }
-
-        // Port 60 not available, fall back to original HTTPS URL.
-        return $url;
-    }
-
-    private function isLocalDomain(): bool
-    {
-        $host = wp_parse_url(home_url(), PHP_URL_HOST) ?? '';
-        $localTlds = ['.test', '.local', '.localhost', '.invalid', '.example'];
-
-        foreach ($localTlds as $tld) {
-            if (str_ends_with($host, $tld)) {
-                return true;
-            }
-        }
-
-        return in_array($host, ['localhost', '127.0.0.1', '::1'], true);
+        return Connection::endpointUrl();
     }
 
     private function getClaudeCodeCommand(string $url, string $token): string
     {
-        return sprintf(
-            'claude mcp add wordpress \'%s\' -t http -H "Authorization: Bearer %s"',
-            $url,
-            $token,
-        );
+        return Connection::claudeCommand($url, $token);
     }
 
     private function getConnectionJson(string $url, string $token): string
     {
-        $config = [
-            'mcpServers' => [
-                'wordpress' => [
-                    'type'    => 'streamable-http',
-                    'url'     => $url,
-                    'headers' => [
-                        'Authorization' => 'Bearer ' . $token,
-                    ],
-                ],
-            ],
-        ];
-
-        return json_encode($config, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+        return Connection::configJson($url, $token);
     }
 }
