@@ -49,4 +49,40 @@ abstract class AbstractTool
             'posts_per_page' => min(max(1, $perPage), 100),
         ];
     }
+
+    /**
+     * Resolve a user by ID, login or email.
+     */
+    protected function resolveUser(string $user): \WP_User
+    {
+        $user = trim($user);
+        if ($user === '') {
+            throw new \RuntimeException('user is required (ID, login or email).');
+        }
+
+        $found = is_numeric($user) ? get_user_by('id', (int) $user) : null;
+        $found = $found ?: get_user_by('login', $user);
+        $found = $found ?: get_user_by('email', $user);
+
+        if (! $found instanceof \WP_User) {
+            throw new \RuntimeException("User not found: {$user}");
+        }
+
+        return $found;
+    }
+
+    /**
+     * Who is driving this MCP session: the logged-in WP user, or the API key name.
+     */
+    protected function callerIdentity(): string
+    {
+        $userId = get_current_user_id();
+        if ($userId) {
+            $user = get_userdata($userId);
+            return 'user:' . ($user ? $user->user_login : $userId);
+        }
+
+        $keyName = $GLOBALS['wp_mcp_api_key_name'] ?? '';
+        return 'api_key:' . ($keyName !== '' ? $keyName : 'unknown');
+    }
 }

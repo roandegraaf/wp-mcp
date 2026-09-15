@@ -15,20 +15,29 @@ class AcfBlockTool extends AbstractTool
      * Parse post content and list all blocks with their data.
      * For ACF blocks, includes field data from block attributes.
      */
-    #[McpTool(name: 'wp_list_post_blocks', description: 'Parse post content and list all Gutenberg blocks with ACF data. Returns block name, index, attributes, and ACF field values.')]
+    #[McpTool(name: 'wp_list_post_blocks', description: 'Parse post content and list all Gutenberg blocks with ACF data. Returns block name, index, attributes, and ACF field values. Accepts a revision or autosave ID (from wp_list_post_revisions) as post_id. compact=true returns only acf_data for ACF blocks (no duplicated attrs.data with field keys) — use it for large pages.')]
     public function listPostBlocks(
-        #[Schema(description: 'Post ID')]
+        #[Schema(description: 'Post, revision or autosave ID')]
         int $post_id,
+        #[Schema(description: 'Omit attrs for ACF blocks and return only their cleaned acf_data')]
+        bool $compact = false,
     ): string {
-        $this->getPostOrFail($post_id);
+        $post = $this->getPostOrFail($post_id);
 
-        $blocks = BlockHelper::parseBlocks($post_id);
+        $blocks = BlockHelper::parseBlocks($post_id, $compact);
 
-        return ResponseFormatter::toJson([
+        $data = [
             'post_id'     => $post_id,
             'block_count' => count($blocks),
-            'blocks'      => $blocks,
-        ]);
+            'compact'     => $compact,
+        ];
+        if ($post->post_type === 'revision') {
+            $data['revision_of'] = (int) $post->post_parent;
+            $data['revision_type'] = str_contains($post->post_name, 'autosave') ? 'autosave' : 'revision';
+        }
+        $data['blocks'] = $blocks;
+
+        return ResponseFormatter::toJson($data);
     }
 
     /**

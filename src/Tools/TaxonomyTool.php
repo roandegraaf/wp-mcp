@@ -7,6 +7,7 @@ namespace WpMcp\Tools;
 use PhpMcp\Server\Attributes\McpTool;
 use PhpMcp\Server\Attributes\Schema;
 use WpMcp\Helpers\ResponseFormatter;
+use WpMcp\Helpers\WpmlHelper;
 
 class TaxonomyTool extends AbstractTool
 {
@@ -27,6 +28,8 @@ class TaxonomyTool extends AbstractTool
         int $number = 100,
         #[Schema(description: 'Order by: name, count, id, slug')]
         string $orderby = 'name',
+        #[Schema(description: 'WPML language code to list (e.g. "de"), or "all" for every language. Empty = the default/current language. Each term row includes wpml.language_code, trid and translation IDs when WPML is active.')]
+        string $language = '',
     ): string {
         $args = [
             'taxonomy'   => $this->sanitizeText($taxonomy),
@@ -42,7 +45,7 @@ class TaxonomyTool extends AbstractTool
             $args['parent'] = $parent;
         }
 
-        $terms = get_terms($args);
+        $terms = WpmlHelper::withLanguage($this->sanitizeText($language), fn() => get_terms($args));
 
         if (is_wp_error($terms)) {
             throw new \RuntimeException('Failed to list terms: ' . $terms->get_error_message());
@@ -52,11 +55,16 @@ class TaxonomyTool extends AbstractTool
             return ResponseFormatter::formatTerm($term);
         }, $terms);
 
-        return ResponseFormatter::toJson([
+        $result = [
             'taxonomy' => $taxonomy,
             'count'    => count($formatted),
-            'terms'    => $formatted,
-        ]);
+        ];
+        if (WpmlHelper::isActive()) {
+            $result['language'] = $language !== '' ? $language : WpmlHelper::currentLanguage();
+        }
+        $result['terms'] = $formatted;
+
+        return ResponseFormatter::toJson($result);
     }
 
     /**

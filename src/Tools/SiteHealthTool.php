@@ -139,53 +139,237 @@ class SiteHealthTool extends AbstractTool
     /**
      * Read the last N lines from the WordPress debug.log file.
      */
-    #[McpTool(name: 'wp_get_error_log', description: 'Read the last N lines from the WordPress debug.log file.')]
+    #[McpTool(name: 'wp_get_error_log', description: 'Read the tail of the PHP/WordPress error log. Reports the resolved log path (PHP ini error_log as set by WP_DEBUG_LOG, then WP_DEBUG_LOG as a path, then wp-content/debug.log), every candidate with existence/size/last-modified, the WP_DEBUG / WP_DEBUG_LOG / WP_DEBUG_DISPLAY state and server time — so a stale file copied from another machine is obvious. since filters entries by their "[dd-Mon-yyyy hh:mm:ss UTC]" timestamp.')]
     public function getErrorLog(
-        #[Schema(description: 'Number of lines to read from the end of the log.', minimum: 1, maximum: 200)]
+        #[Schema(description: 'Number of lines to return from the end of the log (after the since filter).', minimum: 1, maximum: 500)]
         int $lines = 50,
+        #[Schema(description: 'Only return log entries at/after this time (ISO 8601 or strtotime-compatible, e.g. "2026-09-08 12:00" or "-2 hours"). Continuation lines without a timestamp follow their entry.')]
+        string $since = '',
+        #[Schema(description: 'Read a specific candidate instead of the resolved one: "ini", "wp_debug_log" or "wp_content"')]
+        string $source = '',
     ): string {
-        $path = WP_CONTENT_DIR . '/debug.log';
-
-        if (! file_exists($path)) {
-            throw new \RuntimeException('Debug log file not found at: ' . $path);
+        $lines = min(max(1, $lines), 500);
+        $since = trim($this->sanitizeText($since));
+        $sinceTs = null;
+        if ($since !== '') {
+            $sinceTs = strtotime($since);
+            if ($sinceTs === false) {
+                throw new \RuntimeException("Could not parse since: {$since}");
+            }
         }
 
-        $lines = min(max(1, $lines), 200);
+        $candidates = $this->logCandidates();
+        $source = trim($this->sanitizeText($source));
+        if ($source !== '' && ! isset($candidates[$source])) {
+            throw new \RuntimeException('source must be one of: ' . implode(', ', array_keys($candidates)));
+        }
 
+        $path = null;
+        $resolvedFrom = null;
+        foreach ($candidates as $key => $candidate) {
+            if ($source !== '' && $key !== $source) {
+                continue;
+            }
+            if ($candidate['exists']) {
+                $path = $candidate['path'];
+                $resolvedFrom = $key;
+                break;
+            }
+        }
+
+        $data = [
+            'log_path'         => $path,
+            'resolved_from'    => $resolvedFrom,
+            'log_exists'       => $path !== null,
+            'size_bytes'       => $path !== null ? filesize($path) : null,
+            'last_modified'    => $path !== null ? gmdate('c', (int) filemtime($path)) : null,
+            'server_time'      => gmdate('c'),
+            'candidates'       => $candidates,
+            'wp_debug'         => defined('WP_DEBUG') && WP_DEBUG,
+            'wp_debug_log'     => defined('WP_DEBUG_LOG') ? WP_DEBUG_LOG : null,
+            'wp_debug_display' => defined('WP_DEBUG_DISPLAY') ? WP_DEBUG_DISPLAY : null,
+            'php_error_log_ini' => ini_get('error_log') ?: null,
+            'php_log_errors'   => (bool) ini_get('log_errors'),
+            'since'            => $since !== '' ? gmdate('c', $sinceTs) : null,
+        ];
+
+        if ($path === null) {
+            $data['lines'] = [];
+            $data['note'] = 'No log file exists at any candidate path. Enable WP_DEBUG + WP_DEBUG_LOG or check the PHP error_log ini setting.';
+            return ResponseFormatter::toJson($data);
+        }
+
+        // With a since filter the matching entries may sit well before the tail,
+        // so read a larger window (2 MB) and filter; otherwise just the tail.
+        $maxBytes = $sinceTs !== null ? 2 * 1024 * 1024 : 256 * 1024;
+        $tail = $this->readTail($path, $lines + 1, $maxBytes);
+        $allLines = explode("\n", trim($tail['buffer']));
+
+        if ($sinceTs !== null) {
+            $allLines = self::filterLinesSince($allLines, $sinceTs);
+        }
+
+        $data['window_truncated'] = $tail['truncated'];
+        $data['lines'] = array_values(array_filter(array_slice($allLines, -$lines), fn($line) => $line !== ''));
+        $data['returned'] = count($data['lines']);
+
+        return ResponseFormatter::toJson($data);
+    }
+
+    /**
+     * Keep only log entries whose leading "[dd-Mon-yyyy hh:mm:ss TZ]" timestamp is
+     * at/after $sinceTs; lines without a timestamp inherit the previous decision.
+     *
+     * @param list<string> $lines
+     * @return list<string>
+     */
+    public static function filterLinesSince(array $lines, int $sinceTs): array
+    {
+        $keep = false;
+        $out = [];
+        foreach ($lines as $line) {
+            if (preg_match('/^\[([^\]]{10,40})\]/', $line, $m)) {
+                $ts = strtotime($m[1]);
+                if ($ts !== false) {
+                    $keep = $ts >= $sinceTs;
+                }
+            }
+            if ($keep) {
+                $out[] = $line;
+            }
+        }
+        return $out;
+    }
+
+    /**
+     * @return array<string, array{path: string, exists: bool, size_bytes: ?int, last_modified: ?string}>
+     */
+    private function logCandidates(): array
+    {
+        $paths = [];
+
+        $ini = (string) ini_get('error_log');
+        if ($ini !== '' && ! in_array(strtolower($ini), ['syslog', 'stderr'], true)) {
+            $paths['ini'] = $ini;
+        }
+        if (defined('WP_DEBUG_LOG') && is_string(WP_DEBUG_LOG) && WP_DEBUG_LOG !== '' && ! in_array(strtolower(WP_DEBUG_LOG), ['1', 'true'], true)) {
+            $paths['wp_debug_log'] = WP_DEBUG_LOG;
+        }
+        $paths['wp_content'] = WP_CONTENT_DIR . '/debug.log';
+
+        $candidates = [];
+        foreach ($paths as $key => $path) {
+            $exists = is_file($path) && is_readable($path);
+            $candidates[$key] = [
+                'path'          => $path,
+                'exists'        => $exists,
+                'size_bytes'    => $exists ? filesize($path) : null,
+                'last_modified' => $exists ? gmdate('c', (int) filemtime($path)) : null,
+            ];
+        }
+
+        return $candidates;
+    }
+
+    /**
+     * @return array{buffer: string, truncated: bool}
+     */
+    private function readTail(string $path, int $minLines, int $maxBytes): array
+    {
         $handle = fopen($path, 'r');
         if (! $handle) {
-            throw new \RuntimeException('Cannot open debug log file: ' . $path);
+            throw new \RuntimeException('Cannot open log file: ' . $path);
         }
 
         $buffer = '';
         $chunk = 8192;
         fseek($handle, 0, SEEK_END);
         $pos = ftell($handle);
-        $totalSize = $pos;
+        $read = 0;
 
-        while ($pos > 0 && substr_count($buffer, "\n") < $lines + 1) {
+        while ($pos > 0 && $read < $maxBytes && substr_count($buffer, "\n") < $minLines) {
             $readSize = min($chunk, $pos);
             $pos -= $readSize;
             fseek($handle, $pos);
             $buffer = fread($handle, $readSize) . $buffer;
+            $read += $readSize;
         }
         fclose($handle);
 
-        $allLines = explode("\n", trim($buffer));
-        $totalLines = count($allLines);
-        $lastLines = array_values(array_filter(
-            array_slice($allLines, -$lines),
-            fn($line) => $line !== ''
-        ));
+        return ['buffer' => $buffer, 'truncated' => $pos > 0];
+    }
 
-        $data = [
-            'file'          => $path,
-            'total_lines'   => $totalLines,
-            'lines'         => $lastLines,
-            'wp_debug'      => defined('WP_DEBUG') && WP_DEBUG,
-            'wp_debug_log'  => defined('WP_DEBUG_LOG') && WP_DEBUG_LOG,
+    #[McpTool(name: 'wp_get_environment', description: 'Read-only: what is this MCP connected to? Site/home URL, WP_ENVIRONMENT_TYPE and WP_ENV, whether it is production, table prefix, ABSPATH/WP_CONTENT_DIR, server hostname, DB host/name, PHP SAPI, active cache plugins and drop-ins (advanced-cache.php, object-cache.php), WP_DEBUG flags, WPML/ACF versions and the identity of this MCP caller.')]
+    public function getEnvironment(): string
+    {
+        global $wpdb, $table_prefix;
+
+        $envType = function_exists('wp_get_environment_type') ? wp_get_environment_type() : null;
+
+        $activePlugins = (array) get_option('active_plugins', []);
+        if (is_multisite()) {
+            $activePlugins = array_merge($activePlugins, array_keys((array) get_site_option('active_sitewide_plugins', [])));
+        }
+        $cacheSlugs = [
+            'wp-rocket', 'w3-total-cache', 'wp-super-cache', 'litespeed-cache', 'wp-fastest-cache', 'cache-enabler',
+            'redis-cache', 'object-cache-pro', 'memcached', 'wp-optimize', 'hummingbird-performance', 'sg-cachepress',
+            'nginx-helper', 'breeze', 'swift-performance', 'autoptimize', 'flying-press', 'perfmatters', 'cloudflare',
+            'varnish-http-purge', 'comet-cache', 'kinsta-mu-plugins', 'wpengine-common',
         ];
+        $cachePlugins = [];
+        foreach ($activePlugins as $file) {
+            $dir = strtolower(explode('/', (string) $file)[0]);
+            foreach ($cacheSlugs as $slug) {
+                if (str_contains($dir, $slug)) {
+                    $cachePlugins[] = $file;
+                    break;
+                }
+            }
+        }
+        $muPlugins = function_exists('get_mu_plugins') ? array_keys(get_mu_plugins()) : [];
 
-        return ResponseFormatter::toJson($data);
+        return ResponseFormatter::toJson([
+            'site_url'            => get_site_url(),
+            'home_url'            => get_home_url(),
+            'rest_url'            => rest_url(),
+            'wp_environment_type' => $envType,
+            'wp_environment_type_defined' => defined('WP_ENVIRONMENT_TYPE'),
+            'wp_env'              => defined('WP_ENV') ? WP_ENV : null,
+            'is_production'       => $envType === 'production' || $envType === null,
+            'production_note'     => defined('WP_ENVIRONMENT_TYPE') ? null : 'WP_ENVIRONMENT_TYPE is not defined; WordPress assumes production.',
+            'table_prefix'        => $wpdb->prefix,
+            'base_prefix'         => $wpdb->base_prefix,
+            'abspath'             => ABSPATH,
+            'wp_content_dir'      => WP_CONTENT_DIR,
+            'server_hostname'     => gethostname() ?: null,
+            'server_addr'         => $_SERVER['SERVER_ADDR'] ?? null,
+            'php_sapi'            => PHP_SAPI,
+            'php_version'         => PHP_VERSION,
+            'wp_version'          => get_bloginfo('version'),
+            'db_host'             => defined('DB_HOST') ? DB_HOST : null,
+            'db_name'             => defined('DB_NAME') ? DB_NAME : null,
+            'db_version'          => $wpdb->db_version(),
+            'multisite'           => is_multisite(),
+            'is_ssl'              => is_ssl(),
+            'wp_debug'            => defined('WP_DEBUG') && WP_DEBUG,
+            'wp_debug_log'        => defined('WP_DEBUG_LOG') ? WP_DEBUG_LOG : null,
+            'wp_debug_display'    => defined('WP_DEBUG_DISPLAY') ? WP_DEBUG_DISPLAY : null,
+            'script_debug'        => defined('SCRIPT_DEBUG') && SCRIPT_DEBUG,
+            'disallow_file_mods'  => defined('DISALLOW_FILE_MODS') && DISALLOW_FILE_MODS,
+            'wp_cache_constant'   => defined('WP_CACHE') && WP_CACHE,
+            'advanced_cache_dropin' => file_exists(WP_CONTENT_DIR . '/advanced-cache.php'),
+            'object_cache_dropin' => file_exists(WP_CONTENT_DIR . '/object-cache.php'),
+            'external_object_cache' => wp_using_ext_object_cache(),
+            'cache_plugins_active' => $cachePlugins,
+            'mu_plugins'          => $muPlugins,
+            'active_plugin_count' => count($activePlugins),
+            'wpml_version'        => defined('ICL_SITEPRESS_VERSION') ? ICL_SITEPRESS_VERSION : null,
+            'acf_version'         => defined('ACF_VERSION') ? ACF_VERSION : null,
+            'theme'               => wp_get_theme()->get('Name') . ' ' . wp_get_theme()->get('Version'),
+            'wp_mcp_version'      => WP_MCP_VERSION,
+            'mcp_caller'          => $this->callerIdentity(),
+            'server_time'         => gmdate('c'),
+            'timezone'            => wp_timezone_string(),
+        ]);
     }
 }

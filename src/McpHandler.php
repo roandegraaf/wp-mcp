@@ -79,6 +79,7 @@ class McpHandler
             if (wp_check_password($token, $key['hash'])) {
                 $keys[$index]['last_used_at'] = time();
                 update_option('wp_mcp_api_keys', $keys);
+                $GLOBALS['wp_mcp_api_key_name'] = (string) ($key['name'] ?? '');
                 return true;
             }
         }

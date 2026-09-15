@@ -6,7 +6,7 @@ WP MCP turns any WordPress installation into a [Model Context Protocol](https://
 
 ## Features
 
-- **58 tools** across 20 tool categories covering the full WordPress API surface
+- **103 tools** across 27 tool categories covering the full WordPress API surface
 - Standards-based MCP transport over the WordPress REST API
 - Full support for ACF (Advanced Custom Fields), Gutenberg blocks, Yoast SEO, Gravity Forms, WPML, and the Redirection plugin
 - Read *and* write — create posts, upload media, manage redirects, update SEO metadata
@@ -116,13 +116,29 @@ wp mcp connect --name="WP MCP - $(hostname)" --format=text
 | `wp_get_site_health` | Get PHP/WP/MySQL versions, debug mode, SSL, memory limit, upload size, plugin count, and more. |
 | `wp_list_cron_events` | List all scheduled WordPress cron events with next run time, schedule, and arguments. |
 | `wp_list_transients` | List database transients, optionally filtered by name. |
-| `wp_get_error_log` | Read the last N lines from the WordPress `debug.log` file. |
+| `wp_get_error_log` | Read the tail of the resolved PHP/WP error log with its path, size, last-modified time, `WP_DEBUG*` state and a `since` filter, so a stale copied log is obvious. |
+| `wp_get_environment` | Read-only: site/home URL, `WP_ENVIRONMENT_TYPE` / `WP_ENV`, is-production, table prefix, paths, hostname, DB host/name, cache plugins and drop-ins, WPML/ACF versions, MCP caller identity. |
+
+### Diagnostics & Debugging
+
+Built for reproducing and explaining editor save problems on production sites.
+
+| Tool | Description |
+|------|-------------|
+| `wp_create_login_link` | **Security-sensitive write.** One-time, short-lived magic login URL for a user (hashed token in a transient, consumed on first use, audit-logged with the MCP caller) with an optional `redirect_to`, e.g. straight into the block editor for a post. |
+| `wp_rest_request` | **Write-capable.** Run an internal REST request through the real dispatcher as an impersonated user; returns status, headers, full body and `WP_Error` data. `dry_run` (default `true`) wraps it in a DB transaction and rolls back, so "would this user's PUT succeed" is testable without changing content. |
+| `wp_list_failed_writes` | The plugin records every REST/admin-ajax write (POST/PUT/PATCH/DELETE) that returns >= 400 or a `WP_Error`, plus PHP fatals during REST/ajax: timestamp, user, route, status, error, post ID, request size (last 500). Filter by `since`, `user`, `post_id`, `route`. |
+| `wp_get_post_edit_state` | Who touched a post and is it blocked: `_edit_lock` (user, age, active), `_edit_last`, `post_modified`, latest revision/autosave with author, and WPML translation status, needs-update flag, latest job editor and native/WPML/ATE editor mode. |
+| `wp_list_post_revisions` | Revisions and autosaves of a post with type, author, date and content length. |
+| `wp_diff_post_revisions` | Per-block diff between two versions (post or revision IDs): added/removed/changed ACF fields with before/after values instead of raw `post_content`. |
+| `wp_render_post_block` | Render one ACF block server-side with supplied field data (optionally layered on a stored block) in a WPML language and post context, without saving. Returns HTML, resolved field values and every `WP_Query` the template ran with its post IDs. |
+| `wp_render_post` | Front-end HTML of a post as the server generates it now, bypassing page caches via a loopback request; `language` picks the WPML translation. |
 
 ### Posts & Content
 
 | Tool | Description |
 |------|-------------|
-| `wp_list_posts` | List posts, pages, or custom post types with filtering by status, search, taxonomy, date, author, and pagination. |
+| `wp_list_posts` | List posts, pages, or custom post types with filtering by status, search, taxonomy, date, author, and pagination. `language` selects a WPML language (or `all`); rows carry `wpml.language_code`, `trid` and translation IDs. |
 | `wp_get_post` | Get a single post by ID with content, ACF fields, SEO data, and featured image. |
 | `wp_create_post` | Create a post, page, or CPT with title, content, status, and ACF fields. |
 | `wp_update_post` | Partially update an existing post — only provided fields are changed. |
@@ -188,7 +204,7 @@ wp mcp connect --name="WP MCP - $(hostname)" --format=text
 
 | Tool | Description |
 |------|-------------|
-| `wp_list_post_blocks` | Parse post content and list all Gutenberg blocks with ACF data, attributes, and field values. |
+| `wp_list_post_blocks` | Parse post content and list all Gutenberg blocks with ACF data, attributes, and field values. Accepts revision/autosave IDs; `compact=true` returns only `acf_data` for ACF blocks. |
 | `wp_update_post_block` | Update a specific block's field data by index. |
 | `wp_insert_post_block` | Insert a new Gutenberg or ACF block at a specified position in the post content. |
 
@@ -208,7 +224,7 @@ wp mcp connect --name="WP MCP - $(hostname)" --format=text
 | Tool | Description |
 |------|-------------|
 | `wp_get_writing_context` | Get site voice, structure patterns, and topic data an AI needs to write on-brand content. |
-| `wp_get_recent_changes` | Get a unified recent activity log of modified posts across all types. |
+| `wp_get_recent_changes` | Get a unified recent activity log of modified posts across every public and admin-visible post type (including `exclude_from_search` CPTs); `include_revisions` adds revisions/autosaves with their author. |
 | `wp_analyze_content` | Analyze content quality: word count, headings, links, images, read time, and SEO indicators. |
 | `wp_find_broken_links` | Scan a post for links and optionally check HTTP status to find broken links. |
 | `wp_find_orphan_content` | Find published posts with no internal links pointing to them. |

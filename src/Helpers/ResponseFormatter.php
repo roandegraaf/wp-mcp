@@ -34,6 +34,10 @@ class ResponseFormatter
             $data['acf_fields'] = AcfHelper::getFieldsWithSchema($post->ID);
         }
 
+        if (WpmlHelper::isActive()) {
+            $data['wpml'] = WpmlHelper::elementInfo($post);
+        }
+
         // Include taxonomies
         $taxonomies = get_object_taxonomies($post->post_type, 'objects');
         foreach ($taxonomies as $taxonomy) {
@@ -167,6 +171,10 @@ class ResponseFormatter
             if ($fields) {
                 $data['acf_fields'] = $fields;
             }
+        }
+
+        if (WpmlHelper::isActive()) {
+            $data['wpml'] = WpmlHelper::elementInfo($term);
         }
 
         return $data;

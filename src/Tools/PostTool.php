@@ -8,6 +8,7 @@ use PhpMcp\Server\Attributes\McpTool;
 use PhpMcp\Server\Attributes\Schema;
 use WpMcp\Helpers\ResponseFormatter;
 use WpMcp\Helpers\AcfHelper;
+use WpMcp\Helpers\WpmlHelper;
 
 class PostTool extends AbstractTool
 {
@@ -34,6 +35,8 @@ class PostTool extends AbstractTool
         string $order = 'DESC',
         #[Schema(description: 'Taxonomy query as JSON, e.g. {"category": [1,2]} or {"category": "news"}')]
         string $taxonomy_filter = '',
+        #[Schema(description: 'WPML language code to list (e.g. "de"), or "all" for every language. Empty = the default/current language. Each post row includes wpml.language_code, trid and translation IDs when WPML is active.')]
+        string $language = '',
     ): string {
         $args = [
             'post_type'      => $this->sanitizeText($post_type),
@@ -69,9 +72,14 @@ class PostTool extends AbstractTool
             }
         }
 
-        $query = new \WP_Query($args);
+        $result = WpmlHelper::withLanguage($this->sanitizeText($language), function () use ($args) {
+            return ResponseFormatter::formatPostList(new \WP_Query($args));
+        });
+        if (WpmlHelper::isActive()) {
+            $result['language'] = $language !== '' ? $language : WpmlHelper::currentLanguage();
+        }
 
-        return ResponseFormatter::toJson(ResponseFormatter::formatPostList($query));
+        return ResponseFormatter::toJson($result);
     }
 
     /**

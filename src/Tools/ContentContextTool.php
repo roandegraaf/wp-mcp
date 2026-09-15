@@ -96,26 +96,44 @@ class ContentContextTool extends AbstractTool
     /**
      * Get a unified recent activity log of content changes.
      */
-    #[McpTool(name: 'wp_get_recent_changes', description: 'Get a unified recent activity log showing recently modified posts across all types.')]
+    #[McpTool(name: 'wp_get_recent_changes', description: 'Get a unified recent activity log showing recently modified posts across every public and admin-visible post type (including CPTs flagged exclude_from_search, which post_type=any silently drops). include_revisions=true adds a separate list of revisions/autosaves in the same window with their author, so "who saved what, when" is visible even when the parent post_modified did not move.')]
     public function getRecentChanges(
         #[Schema(description: 'Number of results per page', minimum: 1, maximum: 100)]
         int $per_page = 20,
-        #[Schema(description: 'Only show changes after this ISO 8601 date (e.g. 2025-01-01)')]
+        #[Schema(description: 'Only show changes at/after this date-time (ISO 8601, e.g. 2026-09-08 or 2026-09-08T14:00:00)')]
         string $since = '',
+        #[Schema(description: 'Page number', minimum: 1)]
+        int $page = 1,
+        #[Schema(description: 'Restrict to one post type slug; empty means all')]
+        string $post_type = '',
+        #[Schema(description: 'Also list revisions and autosaves (with author) modified in the window')]
+        bool $include_revisions = false,
     ): string {
+        $post_type = $this->sanitizeText($post_type);
+        $postTypes = $post_type !== ''
+            ? [$post_type]
+            : array_values(array_diff(
+                array_unique(array_merge(get_post_types(['public' => true]), get_post_types(['show_ui' => true]))),
+                ['revision', 'nav_menu_item', 'custom_css', 'customize_changeset', 'oembed_cache', 'user_request', 'wp_global_styles', 'wp_navigation', 'wp_template', 'wp_template_part', 'wp_font_family', 'wp_font_face']
+            ));
+
         $args = array_merge([
-            'post_type'   => 'any',
+            'post_type'   => $postTypes,
             'post_status' => 'any',
             'orderby'     => 'modified',
             'order'       => 'DESC',
-        ], $this->paginationArgs(1, $per_page));
+        ], $this->paginationArgs($page, $per_page));
 
         $since = $this->sanitizeText($since);
         if ($since !== '') {
+            if (strtotime($since) === false) {
+                throw new \RuntimeException("Could not parse since: {$since}");
+            }
             $args['date_query'] = [
                 [
-                    'after'  => $since,
-                    'column' => 'post_modified',
+                    'after'     => $since,
+                    'inclusive' => true,
+                    'column'    => 'post_modified',
                 ],
             ];
         }
@@ -124,18 +142,22 @@ class ContentContextTool extends AbstractTool
 
         $changes = array_map(function (\WP_Post $post) {
             $author = get_userdata((int) $post->post_author);
+            $editLast = (int) get_post_meta($post->ID, '_edit_last', true);
+            $editor = $editLast ? get_userdata($editLast) : null;
             return [
-                'id'       => $post->ID,
-                'title'    => $post->post_title,
-                'type'     => $post->post_type,
-                'status'   => $post->post_status,
-                'modified' => $post->post_modified,
-                'author'   => $author ? $author->display_name : 'Unknown',
-                'url'      => get_permalink($post->ID),
+                'id'        => $post->ID,
+                'title'     => $post->post_title,
+                'type'      => $post->post_type,
+                'status'    => $post->post_status,
+                'modified'  => $post->post_modified,
+                'author'    => $author ? $author->display_name : 'Unknown',
+                'edit_last' => $editor ? $editor->display_name : null,
+                'url'       => get_permalink($post->ID),
             ];
         }, $query->posts);
 
-        return ResponseFormatter::toJson([
+        $result = [
+            'post_types' => $postTypes,
             'changes'    => $changes,
             'pagination' => [
                 'page'        => max(1, $query->get('paged') ?: 1),
@@ -143,6 +165,30 @@ class ContentContextTool extends AbstractTool
                 'total'       => (int) $query->found_posts,
                 'total_pages' => (int) $query->max_num_pages,
             ],
-        ]);
+        ];
+
+        if ($include_revisions) {
+            $revisionArgs = $args;
+            $revisionArgs['post_type'] = 'revision';
+            $revisionArgs['post_status'] = 'inherit';
+            $revisionQuery = new \WP_Query($revisionArgs);
+
+            $result['revisions'] = array_map(function (\WP_Post $revision) {
+                $author = get_userdata((int) $revision->post_author);
+                return [
+                    'id'             => $revision->ID,
+                    'type'           => str_contains($revision->post_name, 'autosave') ? 'autosave' : 'revision',
+                    'parent_id'      => (int) $revision->post_parent,
+                    'parent_title'   => get_the_title((int) $revision->post_parent),
+                    'parent_type'    => get_post_type((int) $revision->post_parent),
+                    'modified'       => $revision->post_modified,
+                    'author'         => $author ? $author->display_name : 'Unknown',
+                    'content_length' => strlen($revision->post_content),
+                ];
+            }, $revisionQuery->posts);
+            $result['revisions_total'] = (int) $revisionQuery->found_posts;
+        }
+
+        return ResponseFormatter::toJson($result);
     }
 }

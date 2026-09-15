@@ -24,7 +24,7 @@ class BlockHelper
      * Parse post content into structured block array.
      * For ACF blocks, extracts field data from block attributes.
      */
-    public static function parseBlocks(int $postId): array
+    public static function parseBlocks(int $postId, bool $compact = false): array
     {
         $post = get_post($postId);
         if (! $post instanceof \WP_Post) {
@@ -41,14 +41,21 @@ class BlockHelper
                 continue;
             }
 
+            $isAcf = str_starts_with($block['blockName'], 'acf/');
+
             $formatted = [
                 'index'     => $index,
                 'name'      => $block['blockName'],
-                'attrs'     => $block['attrs'] ?? [],
             ];
 
+            // Compact mode drops attrs.data for ACF blocks: it duplicates
+            // acf_data with field-key companions and dominates the payload.
+            if (! ($compact && $isAcf)) {
+                $formatted['attrs'] = $block['attrs'] ?? [];
+            }
+
             // For ACF blocks, extract clean field data
-            if (str_starts_with($block['blockName'], 'acf/')) {
+            if ($isAcf) {
                 $formatted['acf_data'] = self::extractAcfBlockData($block);
             }
 
@@ -91,6 +98,119 @@ class BlockHelper
         }
 
         return $cleaned;
+    }
+
+    /**
+     * Per-block diff between two parse_blocks() results, aligned by index.
+     * ACF blocks compare their cleaned field data; other blocks compare attrs
+     * and inner HTML.
+     *
+     * ponytail: index alignment — an inserted block shifts every later block
+     * into "replaced/changed"; add LCS alignment by block name if that bites.
+     *
+     * @return array{summary: array<string, int>, blocks: list<array<string, mixed>>}
+     */
+    public static function diffParsedBlocks(array $from, array $to): array
+    {
+        $from = array_values(array_filter($from, fn($b) => ! empty($b['blockName'])));
+        $to = array_values(array_filter($to, fn($b) => ! empty($b['blockName'])));
+
+        $summary = ['added' => 0, 'removed' => 0, 'changed' => 0, 'unchanged' => 0, 'replaced' => 0];
+        $rows = [];
+        $count = max(count($from), count($to));
+
+        for ($i = 0; $i < $count; $i++) {
+            $a = $from[$i] ?? null;
+            $b = $to[$i] ?? null;
+
+            if ($a === null) {
+                $summary['added']++;
+                $rows[] = ['index' => $i, 'status' => 'added', 'name' => $b['blockName'], 'data' => self::blockPayload($b)];
+                continue;
+            }
+            if ($b === null) {
+                $summary['removed']++;
+                $rows[] = ['index' => $i, 'status' => 'removed', 'name' => $a['blockName'], 'data' => self::blockPayload($a)];
+                continue;
+            }
+            if ($a['blockName'] !== $b['blockName']) {
+                $summary['replaced']++;
+                $rows[] = [
+                    'index'  => $i,
+                    'status' => 'replaced',
+                    'from'   => ['name' => $a['blockName'], 'data' => self::blockPayload($a)],
+                    'to'     => ['name' => $b['blockName'], 'data' => self::blockPayload($b)],
+                ];
+                continue;
+            }
+
+            $fields = self::diffAssoc(self::blockPayload($a), self::blockPayload($b));
+            $innerChanged = trim((string) ($a['innerHTML'] ?? '')) !== trim((string) ($b['innerHTML'] ?? ''));
+            $innerBlocksChanged = serialize($a['innerBlocks'] ?? []) !== serialize($b['innerBlocks'] ?? []);
+
+            if ($fields === [] && ! $innerChanged && ! $innerBlocksChanged) {
+                $summary['unchanged']++;
+                continue;
+            }
+
+            $summary['changed']++;
+            $row = ['index' => $i, 'status' => 'changed', 'name' => $a['blockName']];
+            if ($fields !== []) {
+                $row['fields'] = $fields;
+            }
+            if ($innerChanged) {
+                $row['inner_html'] = [
+                    'from' => self::clip((string) ($a['innerHTML'] ?? '')),
+                    'to'   => self::clip((string) ($b['innerHTML'] ?? '')),
+                ];
+            }
+            if ($innerBlocksChanged) {
+                $row['inner_blocks_changed'] = true;
+            }
+            $rows[] = $row;
+        }
+
+        return ['summary' => $summary, 'blocks' => $rows];
+    }
+
+    /**
+     * The comparable payload of a parsed block: cleaned ACF data, or attrs.
+     */
+    private static function blockPayload(array $block): array
+    {
+        if (str_starts_with((string) $block['blockName'], 'acf/')) {
+            return self::extractAcfBlockData($block);
+        }
+        return $block['attrs'] ?? [];
+    }
+
+    /**
+     * @return array<string, array{status: string, from?: mixed, to?: mixed}>
+     */
+    private static function diffAssoc(array $from, array $to): array
+    {
+        $diff = [];
+        foreach ($to as $key => $value) {
+            if (! array_key_exists($key, $from)) {
+                $diff[$key] = ['status' => 'added', 'to' => self::clip($value)];
+            } elseif ($from[$key] != $value || gettype($from[$key]) !== gettype($value) && (string) $from[$key] !== (string) $value) {
+                $diff[$key] = ['status' => 'changed', 'from' => self::clip($from[$key]), 'to' => self::clip($value)];
+            }
+        }
+        foreach ($from as $key => $value) {
+            if (! array_key_exists($key, $to)) {
+                $diff[$key] = ['status' => 'removed', 'from' => self::clip($value)];
+            }
+        }
+        return $diff;
+    }
+
+    private static function clip(mixed $value, int $max = 500): mixed
+    {
+        if (is_string($value) && strlen($value) > $max) {
+            return mb_strcut($value, 0, $max, 'UTF-8') . sprintf('…[%d chars]', strlen($value));
+        }
+        return $value;
     }
 
     /**
