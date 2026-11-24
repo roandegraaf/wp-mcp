@@ -329,7 +329,7 @@ class MenuTool extends AbstractTool
             global $wpdb;
             $map = [];
             $failed = [];
-            $dropped = [];
+            $reattached = [];
             foreach ($plan['create'] as $entry) {
                 $item = $itemsById[$entry['id']];
                 $isCustom = $item->type === 'custom';
@@ -379,10 +379,25 @@ class MenuTool extends AbstractTool
                     $newMenuTtId
                 ));
                 if (! $inMenu) {
-                    $dropped[] = $entry['id'];
+                    // WPML removes an item from the menu when its object's language
+                    // differs from the menu's; objects without a language (e.g. a
+                    // non-translatable taxonomy) fall back to the request language,
+                    // which for a hidden target is not the menu's. Re-attach directly:
+                    // wp_set_object_terms() resolves the menu through language-filtered
+                    // term queries.
+                    $wpdb->insert($wpdb->term_relationships, [
+                        'object_id'        => $newItemId,
+                        'term_taxonomy_id' => $newMenuTtId,
+                        'term_order'       => 0,
+                    ]);
+                    clean_object_term_cache($newItemId, 'nav_menu');
+                    $reattached[] = $entry['id'];
                 }
             }
-            return ['map' => $map, 'failed' => $failed, 'dropped' => $dropped];
+            if ($reattached !== []) {
+                wp_update_term_count_now([$newMenuTtId], 'nav_menu');
+            }
+            return ['map' => $map, 'failed' => $failed, 'reattached' => $reattached];
         });
 
         $skipped = array_map(function (array $skip) use ($itemsById) {
@@ -422,7 +437,7 @@ class MenuTool extends AbstractTool
                 'copied_under_source_item' => $r['to'],
             ], $plan['reparented']),
             'failed'         => $created['failed'],
-            'dropped_by_wpml' => $created['dropped'],
+            'reattached'     => $created['reattached'],
             'message'        => 'Menu translation created. Theme locations were not changed; WPML shows this menu for the source menu\'s locations in ' . $language . '.',
         ]);
     }

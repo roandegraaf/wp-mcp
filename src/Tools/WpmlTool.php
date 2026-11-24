@@ -508,7 +508,7 @@ class WpmlTool extends AbstractTool
                 BlockHelper::savePostContent($newPostId, $source->post_content);
             }
             global $wpdb;
-            $stored = $wpdb->get_var($wpdb->prepare("SELECT post_content FROM {$wpdb->posts} WHERE ID = %d", $newPostId));
+            $stored = (string) $wpdb->get_var($wpdb->prepare("SELECT post_content FROM {$wpdb->posts} WHERE ID = %d", $newPostId));
             $contentIdentical = $stored === $source->post_content;
             if (! $contentIdentical) {
                 $warnings[] = 'Stored content differs from the source content.';
