@@ -226,6 +226,8 @@ class PostTool extends AbstractTool
         string $page_template = '',
         #[Schema(description: 'Taxonomy terms as JSON: {"taxonomy_name": [term_id, ...], ...}. Example: {"category": [3], "post_tag": [1, 2]}')]
         string $taxonomies = '',
+        #[Schema(description: 'Parent post ID (0 to make it top-level, -1 = unchanged)')]
+        int $parent = -1,
     ): string {
         $this->getPostOrFail($post_id);
 
@@ -245,6 +247,12 @@ class PostTool extends AbstractTool
         }
         if ($slug !== '') {
             $postData['post_name'] = sanitize_title($slug);
+        }
+        if ($parent >= 0) {
+            if ($parent > 0) {
+                $this->getPostOrFail($parent);
+            }
+            $postData['post_parent'] = $parent;
         }
 
         if (count($postData) > 1) {

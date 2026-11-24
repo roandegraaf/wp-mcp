@@ -6,7 +6,7 @@ WP MCP turns any WordPress installation into a [Model Context Protocol](https://
 
 ## Features
 
-- **103 tools** across 27 tool categories covering the full WordPress API surface
+- **104 tools** across 27 tool categories covering the full WordPress API surface
 - Standards-based MCP transport over the WordPress REST API
 - Full support for ACF (Advanced Custom Fields), Gutenberg blocks, Yoast SEO, Gravity Forms, WPML, and the Redirection plugin
 - Read *and* write — create posts, upload media, manage redirects, update SEO metadata
@@ -132,7 +132,7 @@ Built for reproducing and explaining editor save problems on production sites.
 | `wp_list_post_revisions` | Revisions and autosaves of a post with type, author, date and content length. |
 | `wp_diff_post_revisions` | Per-block diff between two versions (post or revision IDs): added/removed/changed ACF fields with before/after values instead of raw `post_content`. |
 | `wp_render_post_block` | Render one ACF block server-side with supplied field data (optionally layered on a stored block) in a WPML language and post context, without saving. Returns HTML, resolved field values and every `WP_Query` the template ran with its post IDs. |
-| `wp_render_post` | Front-end HTML of a post as the server generates it now, bypassing page caches via a loopback request; `language` picks the WPML translation. |
+| `wp_render_post` | Front-end HTML of a post as the server generates it now, bypassing page caches via a loopback request; `language` picks the WPML translation. `as_user` renders logged in as that user (short-lived session, destroyed afterwards) so drafts and WPML hidden languages can be checked. |
 
 ### Posts & Content
 
@@ -141,7 +141,7 @@ Built for reproducing and explaining editor save problems on production sites.
 | `wp_list_posts` | List posts, pages, or custom post types with filtering by status, search, taxonomy, date, author, and pagination. `language` selects a WPML language (or `all`); rows carry `wpml.language_code`, `trid` and translation IDs. |
 | `wp_get_post` | Get a single post by ID with content, ACF fields, SEO data, and featured image. |
 | `wp_create_post` | Create a post, page, or CPT with title, content, status, and ACF fields. |
-| `wp_update_post` | Partially update an existing post — only provided fields are changed. |
+| `wp_update_post` | Partially update an existing post — only provided fields are changed (including `parent`). |
 | `wp_delete_post` | Trash or permanently delete a post. |
 | `wp_search_content` | Full-text search across all content types. |
 
@@ -170,6 +170,7 @@ Built for reproducing and explaining editor save problems on production sites.
 | `wp_list_menus` | List all navigation menus and their registered locations. |
 | `wp_get_menu_items` | Get all items in a menu with hierarchy (parent/child relationships). |
 | `wp_update_menu_item` | Update a menu item's title, URL, CSS classes, target, or position. |
+| `wp_create_menu_translation` | WPML: create a linked translation of a menu in another language, copying every item with its hierarchy. Page/term items point to their translations (untranslated ones are skipped and reported), custom links keep their URL unless `item_urls` overrides it, labels come from `item_titles`. Theme locations are left to WPML. |
 
 ### Users
 
@@ -182,7 +183,7 @@ Built for reproducing and explaining editor save problems on production sites.
 | Tool | Description |
 |------|-------------|
 | `wp_get_option` | Read any WordPress option by name. |
-| `wp_update_option` | Update a WordPress option. Critical options are blocked for safety. |
+| `wp_update_option` | Update a WordPress option. Critical options are blocked for safety. Array/object options only accept JSON: `merge=true` (default) changes only the passed keys, `merge=false` replaces the value; plain strings are rejected so they cannot overwrite the option. `icl_sitepress_settings` can only be merged. |
 
 ### Plugins & Theme
 
@@ -195,8 +196,8 @@ Built for reproducing and explaining editor save problems on production sites.
 
 | Tool | Description |
 |------|-------------|
-| `wp_get_acf_fields` | Get all ACF field values for a post with type annotations. Handles repeaters, flex content, groups, and images. Use `"option"` as post_id for options pages. |
-| `wp_update_acf_fields` | Update ACF fields on a post. Supports images (attachment ID), repeaters, flex content, and options pages. |
+| `wp_get_acf_fields` | Get all ACF field values for a post with type annotations. Handles repeaters, flex content, groups, and images. Use `"option"` as post_id for options pages; with WPML, `language` reads that language's options (empty = default language). |
+| `wp_update_acf_fields` | Update ACF fields on a post. Supports images (attachment ID), repeaters, flex content, and options pages; with WPML, `language` writes that language's options without touching the others. |
 | `wp_list_field_groups` | List all ACF field groups with their assignments (post types, taxonomies, etc.). |
 | `wp_get_field_group_schema` | Get complete field definitions: types, choices, sub-fields, conditional logic, validation rules. |
 
@@ -254,7 +255,7 @@ Built for reproducing and explaining editor save problems on production sites.
 | `wp_list_languages` | List all configured WPML languages with codes, names, and default status. |
 | `wp_get_translations` | Get all translations of a post with language, title, status, and URL. |
 | `wp_get_translation_status` | Get translation completeness overview per language for a post type. |
-| `wp_create_translation` | Create a translation for an existing post and link it in WPML. |
+| `wp_create_translation` | Create a full WPML translation of a post: copies the source content byte for byte (unless `content` is given), page template, featured image, menu order and author, maps the parent to its translation, and runs WPML's custom-field sync (copy / copy once). Refuses when the language already has a translation. |
 
 ---
 

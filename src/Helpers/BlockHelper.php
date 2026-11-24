@@ -457,7 +457,7 @@ class BlockHelper
      * Save post content directly via $wpdb to avoid wp_update_post's
      * slash-stripping which corrupts JSON escape sequences in block attributes.
      */
-    private static function savePostContent(int $postId, string $content): void
+    public static function savePostContent(int $postId, string $content): void
     {
         global $wpdb;
 

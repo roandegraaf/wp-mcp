@@ -79,4 +79,104 @@ class WpmlHelper
         $code = apply_filters('wpml_current_language', null);
         return is_string($code) ? $code : null;
     }
+
+    public static function requireActive(): void
+    {
+        if (! self::isActive()) {
+            throw new \RuntimeException('WPML is required but not active.');
+        }
+    }
+
+    public static function defaultLanguage(): ?string
+    {
+        if (! self::isActive()) {
+            return null;
+        }
+        $code = apply_filters('wpml_default_language', null);
+        return is_string($code) && $code !== '' ? $code : null;
+    }
+
+    /**
+     * Codes of every language enabled on the site, hidden languages included.
+     * Null when SitePress cannot be reached.
+     *
+     * @return list<string>|null
+     */
+    public static function enabledLanguageCodes(): ?array
+    {
+        global $sitepress;
+
+        if (! is_object($sitepress) || ! method_exists($sitepress, 'get_active_languages')) {
+            return null;
+        }
+
+        $active = $sitepress->get_active_languages();
+        $codes = is_array($active) ? array_keys($active) : [];
+
+        // get_active_languages() drops hidden languages unless the current user
+        // opted in to seeing them, which API-key requests never have.
+        if (method_exists($sitepress, 'get_setting')) {
+            $hidden = $sitepress->get_setting('hidden_languages', []);
+            if (is_array($hidden)) {
+                $codes = array_merge($codes, $hidden);
+            }
+        }
+
+        return array_values(array_unique(array_map('strval', $codes)));
+    }
+
+    public static function requireEnabledLanguage(string $code): string
+    {
+        $code = trim($code);
+        if ($code === '') {
+            throw new \RuntimeException('A WPML language code is required.');
+        }
+        $enabled = self::enabledLanguageCodes();
+        if ($enabled !== null && ! in_array($code, $enabled, true)) {
+            throw new \RuntimeException("Language '{$code}' is not enabled in WPML. Enabled: " . implode(', ', $enabled));
+        }
+        return $code;
+    }
+
+    /**
+     * ACF stores options per language as "options" (default language) and
+     * "options_<code>" (others).
+     */
+    public static function acfOptionsPostId(string $language, ?string $defaultLanguage): string
+    {
+        return $language === '' || $language === $defaultLanguage ? 'options' : 'options_' . $language;
+    }
+
+    /**
+     * Copy custom fields from a post to its translation the way WPML does on
+     * save: every field set to "copy", plus "copy once" fields the target does
+     * not have yet. Fields set to "translate" or "ignore" are left alone.
+     *
+     * @return list<string>|null Meta keys added to the target; null when the WPML API is missing.
+     */
+    public static function syncCustomFields(int $fromId, int $toId): ?array
+    {
+        global $sitepress;
+
+        if (! is_object($sitepress) || ! method_exists($sitepress, 'copy_custom_fields')) {
+            return null;
+        }
+
+        $before = array_keys(get_post_meta($toId));
+
+        $sitepress->copy_custom_fields($fromId, $toId);
+
+        if (defined('WPML_COPY_ONCE_CUSTOM_FIELD')
+            && method_exists($sitepress, 'get_custom_fields_translation_settings')
+            && method_exists($sitepress, 'sync_custom_field')
+        ) {
+            foreach ((array) $sitepress->get_custom_fields_translation_settings(WPML_COPY_ONCE_CUSTOM_FIELD) as $metaKey) {
+                if (get_post_meta($toId, (string) $metaKey) === []) {
+                    $sitepress->sync_custom_field($fromId, $toId, (string) $metaKey);
+                }
+            }
+        }
+
+        return array_values(array_diff(array_keys(get_post_meta($toId)), $before));
+    }
 }

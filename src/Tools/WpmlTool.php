@@ -6,7 +6,10 @@ namespace WpMcp\Tools;
 
 use PhpMcp\Server\Attributes\McpTool;
 use PhpMcp\Server\Attributes\Schema;
+use WpMcp\Helpers\BlockHelper;
 use WpMcp\Helpers\ResponseFormatter;
+use WpMcp\Helpers\TranslationPlan;
+use WpMcp\Helpers\WpmlHelper;
 
 class WpmlTool extends AbstractTool
 {
@@ -15,36 +18,6 @@ class WpmlTool extends AbstractTool
         if (! function_exists('icl_get_languages')) {
             throw new \RuntimeException('WPML is required but not active.');
         }
-    }
-
-    /**
-     * Codes of all languages enabled on the site (active set + hidden languages,
-     * which remain enabled). Returns null when SitePress cannot be reached so the
-     * caller can fall back gracefully.
-     *
-     * @return list<string>|null
-     */
-    private function getEnabledLanguageCodes(): ?array
-    {
-        global $sitepress;
-
-        if (! is_object($sitepress) || ! method_exists($sitepress, 'get_active_languages')) {
-            return null;
-        }
-
-        $active = $sitepress->get_active_languages();
-        $codes = is_array($active) ? array_keys($active) : [];
-
-        // Hidden languages are excluded from get_active_languages() in a normal
-        // request but are still enabled — merge them back in.
-        if (method_exists($sitepress, 'get_setting')) {
-            $hidden = $sitepress->get_setting('hidden_languages', []);
-            if (is_array($hidden)) {
-                $codes = array_values(array_unique(array_merge($codes, $hidden)));
-            }
-        }
-
-        return array_map('strval', $codes);
     }
 
     /**
@@ -177,7 +150,7 @@ class WpmlTool extends AbstractTool
         // report active:false. Resolve the real enabled set from SitePress
         // instead (including hidden languages, which are still enabled — they are
         // merely hidden from the language switcher).
-        $enabledCodes = $this->getEnabledLanguageCodes();
+        $enabledCodes = WpmlHelper::enabledLanguageCodes();
 
         $result = [];
         foreach ($languages as $lang) {
@@ -419,7 +392,7 @@ class WpmlTool extends AbstractTool
         ]);
     }
 
-    #[McpTool(name: 'wp_create_translation', description: 'Create a translation for an existing post. Links the new post as a WPML translation of the source.')]
+    #[McpTool(name: 'wp_create_translation', description: 'Create a full WPML translation of a post/page/CPT. Without content, the source post_content is copied byte for byte (block JSON intact) so you then only change the translatable fields with wp_update_post_block / wp_update_acf_fields. Also copies the page template, featured image (mapped to the translated attachment if one exists), menu_order and author, maps post_parent to the parent\'s translation in the target language (0 when that does not exist yet), and runs WPML\'s own custom-field sync (fields set to "copy" and "copy once"; "translate" fields are left for you to fill). Refuses when the source already has a translation in that language and returns its ID in the error.')]
     public function createTranslation(
         #[Schema(description: 'Source post ID to translate')]
         int $post_id,
@@ -427,60 +400,186 @@ class WpmlTool extends AbstractTool
         string $language,
         #[Schema(description: 'Title for the translated post')]
         string $title,
-        #[Schema(description: 'Content for the translated post')]
-        string $content,
+        #[Schema(description: 'Content for the translated post. Empty = copy the source content byte for byte.')]
+        string $content = '',
         #[Schema(description: 'Post status: draft, publish, or pending')]
         string $status = 'draft',
+        #[Schema(description: 'Translated slug (empty = generated from the title)')]
+        string $slug = '',
+        #[Schema(description: 'Translated excerpt (empty = no excerpt)')]
+        string $excerpt = '',
+        #[Schema(description: 'Run WPML\'s custom-field sync (copy / copy-once preferences) from the source')]
+        bool $copy_meta = true,
+        #[Schema(description: 'Copy the source featured image')]
+        bool $copy_featured_image = true,
     ): string {
         $this->requireWpml();
 
-        $post = $this->getPostOrFail($post_id);
-
+        $source = $this->getPostOrFail($post_id);
+        $language = WpmlHelper::requireEnabledLanguage($this->sanitizeText($language));
         $title = $this->sanitizeText($title);
-        $language = $this->sanitizeText($language);
 
         $allowedStatuses = ['draft', 'publish', 'pending'];
         if (! in_array($status, $allowedStatuses, true)) {
             throw new \RuntimeException("Invalid status '{$status}'. Allowed: " . implode(', ', $allowedStatuses));
         }
 
-        // Disable kses filters to preserve HTML inside block comment JSON attributes
-        kses_remove_filters();
-        $newPostId = wp_insert_post([
-            'post_title'   => $title,
-            'post_content' => $content,
-            'post_status'  => $status,
-            'post_type'    => $post->post_type,
-            'post_author'  => $post->post_author,
+        $wpmlType = 'post_' . $source->post_type;
+        $details = apply_filters('wpml_element_language_details', null, [
+            'element_id'   => $post_id,
+            'element_type' => $wpmlType,
         ]);
-        kses_init_filters();
+        if (! is_object($details) || empty($details->trid)) {
+            throw new \RuntimeException("Post {$post_id} is not registered in WPML (no translation group). Check that its post type is translatable.");
+        }
+        $trid = (int) $details->trid;
+        $sourceLanguage = (string) $details->language_code;
+
+        if ($language === $sourceLanguage) {
+            throw new \RuntimeException("Post {$post_id} is already in '{$language}'.");
+        }
+
+        foreach ($this->readTranslationGroup($trid, $wpmlType) as $row) {
+            if ($row['language_code'] === $language && ! empty($row['exists'])) {
+                throw new \RuntimeException("Post {$post_id} already has a '{$language}' translation: post {$row['element_id']}. Edit that post instead.");
+            }
+        }
+
+        $sourceParent = (int) $source->post_parent;
+        $translatedParent = $sourceParent > 0
+            ? apply_filters('wpml_object_id', $sourceParent, $source->post_type, false, $language)
+            : null;
+        $parent = TranslationPlan::postParent($sourceParent, $translatedParent ? (int) $translatedParent : null);
+
+        $copyContent = $content === '';
+        $postarr = [
+            'post_title'     => $title,
+            'post_content'   => $copyContent ? $source->post_content : $content,
+            'post_excerpt'   => $this->sanitizeText($excerpt),
+            'post_status'    => $status,
+            'post_type'      => $source->post_type,
+            'post_author'    => (int) $source->post_author,
+            'post_parent'    => $parent['parent_id'],
+            'menu_order'     => (int) $source->menu_order,
+            'comment_status' => $source->comment_status,
+            'ping_status'    => $source->ping_status,
+        ];
+        $wantedSlug = $slug !== '' ? sanitize_title($slug) : '';
+        if ($wantedSlug !== '') {
+            $postarr['post_name'] = $wantedSlug;
+        }
+
+        // WPML's save_post hook registers every new post in the request language
+        // before we can link it. Forcing the target language keeps it from ever
+        // existing as a default-language original, which automatic translation
+        // would otherwise queue.
+        $forceLanguage = static fn() => $language;
+        add_filter('wpml_save_post_lang', $forceLanguage, PHP_INT_MAX);
+        kses_remove_filters();
+        try {
+            $newPostId = wp_insert_post(wp_slash($postarr), true);
+        } finally {
+            kses_init();
+            remove_filter('wpml_save_post_lang', $forceLanguage, PHP_INT_MAX);
+        }
 
         if ($newPostId instanceof \WP_Error) {
             throw new \RuntimeException('Failed to create translation: ' . $newPostId->get_error_message());
         }
-
-        $elementType = 'post_' . $post->post_type;
-        $trid = apply_filters('wpml_element_trid', null, $post_id, $elementType);
-        $sourceLanguage = apply_filters('wpml_element_language_code', null, [
-            'element_id'   => $post_id,
-            'element_type' => $elementType,
-        ]);
+        $newPostId = (int) $newPostId;
 
         do_action('wpml_set_element_language_details', [
             'element_id'           => $newPostId,
-            'element_type'         => $elementType,
+            'element_type'         => $wpmlType,
             'trid'                 => $trid,
             'language_code'        => $language,
             'source_language_code' => $sourceLanguage,
         ]);
+        $linked = (int) apply_filters('wpml_element_trid', null, $newPostId, $wpmlType) === $trid;
+
+        $warnings = [];
+        if (! $linked) {
+            $warnings[] = "Post {$newPostId} was created but could not be linked to translation group {$trid}. Link it with wp_link_wpml_translation.";
+        }
+
+        $contentIdentical = null;
+        if ($copyContent) {
+            if ((string) get_post_field('post_content', $newPostId, 'raw') !== $source->post_content) {
+                BlockHelper::savePostContent($newPostId, $source->post_content);
+            }
+            global $wpdb;
+            $stored = $wpdb->get_var($wpdb->prepare("SELECT post_content FROM {$wpdb->posts} WHERE ID = %d", $newPostId));
+            $contentIdentical = $stored === $source->post_content;
+            if (! $contentIdentical) {
+                $warnings[] = 'Stored content differs from the source content.';
+            }
+        }
+
+        $metaKeys = null;
+        if ($copy_meta) {
+            $metaKeys = WpmlHelper::syncCustomFields($post_id, $newPostId);
+            if ($metaKeys === null) {
+                $warnings[] = 'WPML custom-field sync API not available; no meta was copied.';
+            }
+        }
+
+        $template = (string) get_post_meta($post_id, '_wp_page_template', true);
+        if ($template !== '') {
+            update_post_meta($newPostId, '_wp_page_template', $template);
+        }
+
+        $featuredImage = null;
+        $sourceThumb = (int) get_post_thumbnail_id($source);
+        if ($copy_featured_image && $sourceThumb > 0) {
+            $featuredImage = (int) apply_filters('wpml_object_id', $sourceThumb, 'attachment', true, $language);
+            set_post_thumbnail($newPostId, $featuredImage);
+        } elseif (! $copy_featured_image && has_post_thumbnail($newPostId)) {
+            delete_post_thumbnail($newPostId);
+            $warnings[] = 'WPML copied _thumbnail_id via its custom-field preference; it was removed because copy_featured_image=false, but WPML will copy it again when the source is saved.';
+        }
+
+        if ($wantedSlug !== '' && get_post_field('post_name', $newPostId) !== $wantedSlug) {
+            // The slug was made unique before the post had its target language;
+            // retry now that WPML can scope uniqueness to that language.
+            wp_update_post(['ID' => $newPostId, 'post_name' => $wantedSlug]);
+        }
+        $finalSlug = (string) get_post_field('post_name', $newPostId);
+        if ($wantedSlug !== '' && $finalSlug !== $wantedSlug) {
+            $warnings[] = "Slug '{$wantedSlug}' is taken; WordPress used '{$finalSlug}'.";
+        }
+
+        if ($parent['status'] === 'parent_not_translated') {
+            $warnings[] = "Parent post {$sourceParent} has no '{$language}' translation yet, so post_parent is 0. Translate the parent, then set it with wp_update_post (parent).";
+        }
 
         return ResponseFormatter::toJson([
             'source_post_id'     => $post_id,
             'translated_post_id' => $newPostId,
             'language'           => $language,
+            'source_language'    => $sourceLanguage,
+            'trid'               => $trid,
+            'linked'             => $linked,
             'title'              => $title,
+            'slug'               => $finalSlug,
             'status'             => $status,
-            'message'            => 'Translation created successfully.',
+            'copied'             => [
+                'content'           => $copyContent ? 'source' : 'provided',
+                'content_identical' => $contentIdentical,
+                'meta_keys'         => $metaKeys,
+                'page_template'     => $template !== '' ? $template : null,
+                'featured_image_id' => $featuredImage,
+                'menu_order'        => (int) $source->menu_order,
+                'post_author'       => (int) $source->post_author,
+            ],
+            'parent'             => [
+                'source_parent_id' => $sourceParent,
+                'parent_id'        => $parent['parent_id'],
+                'status'           => $parent['status'],
+            ],
+            'warnings'           => $warnings,
+            'message'            => $copyContent
+                ? 'Translation created with the source content. Now translate the text fields (wp_update_post_block, wp_update_acf_fields).'
+                : 'Translation created.',
         ]);
     }
 

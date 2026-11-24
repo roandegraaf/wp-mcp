@@ -7,6 +7,7 @@ namespace WpMcp\Tools;
 use PhpMcp\Server\Attributes\McpTool;
 use PhpMcp\Server\Attributes\Schema;
 use WpMcp\Helpers\AcfFieldKeyResolver;
+use WpMcp\Helpers\RenderAsUser;
 use WpMcp\Helpers\ResponseFormatter;
 use WpMcp\Helpers\WpmlHelper;
 
@@ -109,7 +110,7 @@ class RenderTool extends AbstractTool
         ]);
     }
 
-    #[McpTool(name: 'wp_render_post', description: 'Fetch the front-end HTML of a post exactly as the server generates it right now, bypassing page caches (loopback request with a random query string and no-cache headers, which WP Rocket, nginx/fastcgi, Cloudflare and similar treat as uncacheable). With WPML, language selects that translation\'s URL. Only publicly viewable posts render; drafts return the front-end 404/redirect. NOTE: loopback requests can hang on hosts with a single PHP-FPM worker.')]
+    #[McpTool(name: 'wp_render_post', description: 'Fetch the front-end HTML of a post exactly as the server generates it right now, bypassing page caches (loopback request with a random query string and no-cache headers, which WP Rocket, nginx/fastcgi, Cloudflare and similar treat as uncacheable). With WPML, language selects that translation\'s URL. Logged out, only publicly viewable posts render (drafts and WPML hidden languages return the front-end 404/redirect); pass as_user to render as that user instead, e.g. for QA of drafts or hidden languages (the request carries a short-lived session that is destroyed afterwards, and WPML hidden languages are shown to that user for that request only). NOTE: loopback requests can hang on hosts with a single PHP-FPM worker.')]
     public function renderPost(
         #[Schema(description: 'Post ID (any language; the translation is resolved when language is given)')]
         int $post_id,
@@ -119,8 +120,11 @@ class RenderTool extends AbstractTool
         int $max_html_chars = 100000,
         #[Schema(description: 'Request timeout in seconds', minimum: 1, maximum: 60)]
         int $timeout = 30,
+        #[Schema(description: 'Render logged in as this user (ID, login or email). Empty = logged out.')]
+        string $as_user = '',
     ): string {
         $post = $this->getPostOrFail($post_id);
+        $renderUser = trim($as_user) !== '' ? $this->resolveUser($as_user) : null;
         $language = trim($this->sanitizeText($language));
 
         $targetId = $post_id;
@@ -140,14 +144,22 @@ class RenderTool extends AbstractTool
         $bypass = bin2hex(random_bytes(6));
         $fetchUrl = add_query_arg('wp_mcp_nocache', $bypass, $url);
 
+        $auth = $renderUser ? RenderAsUser::issue($renderUser) : null;
         $started = microtime(true);
-        $response = wp_remote_get($fetchUrl, [
-            'timeout'     => min(max(1, $timeout), 60),
-            'redirection' => 3,
-            'sslverify'   => false,
-            'user-agent'  => 'WP-MCP-Renderer/' . WP_MCP_VERSION,
-            'headers'     => ['Cache-Control' => 'no-cache', 'Pragma' => 'no-cache'],
-        ]);
+        try {
+            $response = wp_remote_get($fetchUrl, [
+                'timeout'     => min(max(1, $timeout), 60),
+                'redirection' => 3,
+                'sslverify'   => false,
+                'user-agent'  => 'WP-MCP-Renderer/' . WP_MCP_VERSION,
+                'headers'     => ['Cache-Control' => 'no-cache', 'Pragma' => 'no-cache'] + ($auth['headers'] ?? []),
+                'cookies'     => $auth['cookies'] ?? [],
+            ]);
+        } finally {
+            if ($auth) {
+                RenderAsUser::revoke($auth);
+            }
+        }
         $durationMs = round((microtime(true) - $started) * 1000, 1);
 
         if (is_wp_error($response)) {
@@ -172,6 +184,9 @@ class RenderTool extends AbstractTool
             'language'       => $language !== '' ? $language : null,
             'url'            => $url,
             'fetched_url'    => $fetchUrl,
+            'as_user'        => $renderUser
+                ? ['id' => $renderUser->ID, 'login' => $renderUser->user_login, 'roles' => $renderUser->roles]
+                : null,
             'status'         => (int) wp_remote_retrieve_response_code($response),
             'duration_ms'    => $durationMs,
             'headers'        => $interesting,
