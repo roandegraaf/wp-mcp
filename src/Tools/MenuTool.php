@@ -247,6 +247,21 @@ class MenuTool extends AbstractTool
     ): string {
         WpmlHelper::requireActive();
 
+        // WPML swaps menu terms for their translation in the request language
+        // (get_term filter). Inside wp_update_nav_menu_item that attaches new items
+        // to the source menu whenever the target language cannot be switched to,
+        // e.g. a hidden language during an API-key request.
+        $noTermAdjust = static fn() => true;
+        add_filter('wpml_disable_term_adjust_id', $noTermAdjust, PHP_INT_MAX);
+        try {
+            return $this->translateMenu($menu_id, $language, $name, $item_titles, $item_urls);
+        } finally {
+            remove_filter('wpml_disable_term_adjust_id', $noTermAdjust, PHP_INT_MAX);
+        }
+    }
+
+    private function translateMenu(int $menu_id, string $language, string $name, string $item_titles, string $item_urls): string
+    {
         $menu = wp_get_nav_menu_object($menu_id);
         if (! $menu instanceof \WP_Term) {
             throw new \RuntimeException("Menu not found: {$menu_id}");
@@ -274,7 +289,7 @@ class MenuTool extends AbstractTool
             throw new \RuntimeException("Menu {$menu_id} already has a '{$language}' translation: menu {$existingId}.");
         }
 
-        $sourceItems = WpmlHelper::withLanguage($sourceLanguage, fn() => wp_get_nav_menu_items($menu->term_id) ?: []);
+        $sourceItems = WpmlHelper::withLanguage($sourceLanguage, fn() => wp_get_nav_menu_items($menu) ?: []);
         $itemsById = [];
         $planInput = [];
         foreach ($sourceItems as $item) {
@@ -297,19 +312,21 @@ class MenuTool extends AbstractTool
             throw new \RuntimeException('Failed to create menu: ' . $newMenuId->get_error_message());
         }
         $newMenu = wp_get_nav_menu_object($newMenuId);
+        $newMenuTtId = (int) $newMenu->term_taxonomy_id;
 
         // The menu must be in the target language before items are added: WPML's
         // wp_update_nav_menu_item hook removes items whose object language differs
         // from the menu's language.
         do_action('wpml_set_element_language_details', [
-            'element_id'           => (int) $newMenu->term_taxonomy_id,
+            'element_id'           => $newMenuTtId,
             'element_type'         => 'tax_nav_menu',
             'trid'                 => $trid,
             'language_code'        => $language,
             'source_language_code' => $sourceLanguage,
         ]);
 
-        $created = WpmlHelper::withLanguage($language, function () use ($plan, $itemsById, $targets, $titles, $urls, $newMenuId, $language, $sourceLanguage) {
+        $created = WpmlHelper::withLanguage($language, function () use ($plan, $itemsById, $targets, $titles, $urls, $newMenuId, $newMenuTtId, $language, $sourceLanguage) {
+            global $wpdb;
             $map = [];
             $failed = [];
             $dropped = [];
@@ -356,7 +373,12 @@ class MenuTool extends AbstractTool
                 }
                 WpmlHelper::syncCustomFields($entry['id'], $newItemId);
 
-                if (! is_object_in_term($newItemId, 'nav_menu', $newMenuId)) {
+                $inMenu = $wpdb->get_var($wpdb->prepare(
+                    "SELECT 1 FROM {$wpdb->term_relationships} WHERE object_id = %d AND term_taxonomy_id = %d",
+                    $newItemId,
+                    $newMenuTtId
+                ));
+                if (! $inMenu) {
                     $dropped[] = $entry['id'];
                 }
             }
@@ -380,7 +402,8 @@ class MenuTool extends AbstractTool
             $items[] = [
                 'source_item_id' => $sourceItemId,
                 'item_id'        => $newItemId,
-                'title'          => $itemsById[$sourceItemId]->title,
+                'source_title'   => $itemsById[$sourceItemId]->title,
+                'label'          => (string) get_post_field('post_title', $newItemId) ?: null,
             ];
         }
 

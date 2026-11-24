@@ -136,7 +136,7 @@ class RenderTool extends AbstractTool
             $targetId = (int) $translated;
         }
 
-        $url = WpmlHelper::withLanguage($language, fn() => get_permalink($targetId));
+        $url = WpmlHelper::withLanguage($language, fn() => WpmlHelper::permalink($targetId));
         if (! is_string($url) || $url === '') {
             throw new \RuntimeException("No permalink for post {$targetId}.");
         }

@@ -80,6 +80,21 @@ class WpmlHelper
         return is_string($code) ? $code : null;
     }
 
+    /**
+     * Permalink of a post in its own language. WPML's ID adjustment otherwise
+     * maps the post to its translation in the request language, and the request
+     * cannot switch to a hidden language when the caller has no user.
+     */
+    public static function permalink(int $postId): string|false
+    {
+        global $sitepress;
+
+        if (self::isActive() && is_object($sitepress) && class_exists(\WPML\Utils\AutoAdjustIds::class)) {
+            return (new \WPML\Utils\AutoAdjustIds($sitepress))->runWithout(fn() => get_permalink($postId));
+        }
+        return get_permalink($postId);
+    }
+
     public static function requireActive(): void
     {
         if (! self::isActive()) {
